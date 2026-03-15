@@ -1,6 +1,6 @@
 import asyncio
 from aiohttp import ClientSession
-from poc import aioresponses
+from poc import aioresponses_2
 
 
 class BusinessLogic:
@@ -11,7 +11,7 @@ class BusinessLogic:
 
 
 async def main():
-    async with aioresponses() as aio:
+    async with aioresponses_2() as aio:
         aio.get("http://example.com/foo", status=200, body="Mocked response")
 
         business_logic = BusinessLogic()

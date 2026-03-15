@@ -50,7 +50,7 @@ def merge_params(url: URL | str, params: dict | None = None) -> URL:
     return url
 
 
-class aioresponses:
+class aioresponses_2:
     def __init__(self):
         self.resolver = FakeResolver()
         self.handlers = {}
