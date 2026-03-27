@@ -1,3 +1,3 @@
-from .aioresponses import aioresponses
+from .core import aioresponses
 
 __all__ = ["aioresponses"]

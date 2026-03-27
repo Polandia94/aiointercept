@@ -26,9 +26,9 @@ except ImportError:
     from aiohttp.http_exceptions import HttpProcessingError
 
 # from aioresponses import CallbackResult, aioresponses
-from aioresponses.aioresponses import aioresponses
+from aioresponses import aioresponses
 
-from .base import AsyncTestCase, fail_on
+from .base import AsyncTestCase
 
 
 @ddt
@@ -60,9 +60,8 @@ class AIOResponsesTestCase(AsyncTestCase):
         hdrs.METH_OPTIONS,
     )
     @patch("aioresponses.aioresponses.add")
-    @fail_on(unused_loop=False)
-    def test_shortcut_method(self, http_method, mocked):
-        with aioresponses() as m:
+    async def test_shortcut_method(self, http_method, mocked):
+        async with aioresponses() as m:
             getattr(m, http_method.lower())(self.url)
             mocked.assert_called_once_with(self.url, method=http_method)
 
@@ -224,7 +223,6 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertEqual(content, body)
 
     @aioresponses()
-    @pytest.mark.skip
     async def test_binary_body_via_callback(self, m):
         body = b"\x00\x01\x02\x80\x81\x82\x83\x84\x85"
 
@@ -237,7 +235,7 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertEqual(content, body)
 
     async def test_mocking_as_context_manager(self):
-        with aioresponses() as aiomock:
+        async with aioresponses() as aiomock:
             aiomock.add(self.url, payload={"foo": "bar"})
             resp = await self.session.get(self.url)
             self.assertEqual(resp.status, 200)
@@ -265,7 +263,6 @@ class AIOResponsesTestCase(AsyncTestCase):
 
         await foo()
 
-    @fail_on(unused_loop=False)
     def test_mocking_as_decorator_wrong_mocked_arg_name(self):
         @aioresponses(param="foo")
         def foo(bar):
@@ -278,13 +275,13 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertIn("foo() got an unexpected keyword argument 'foo'", str(exc))
 
     async def test_unknown_request(self):
-        with aioresponses() as aiomock:
+        async with aioresponses() as aiomock:
             aiomock.add(self.url, payload={"foo": "bar"})
             with self.assertRaises(ClientConnectionError):
                 await self.session.get("http://example.com/foo")
 
     async def test_raising_exception(self):
-        with aioresponses() as aiomock:
+        async with aioresponses() as aiomock:
             url = "http://example.com/Exception"
             aiomock.get(url, exception=Exception)
             with self.assertRaises(Exception):
@@ -332,7 +329,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
     async def test_multiple_requests(self):
         """Ensure that requests are saved the way they would have been sent."""
-        with aioresponses() as m:
+        async with aioresponses() as m:
             m.get(self.url, status=200)
             m.get(self.url, status=201)
             m.get(self.url, status=202)
@@ -369,7 +366,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
         generator_value = non_deep_copyable()
 
-        with aioresponses() as m:
+        async with aioresponses() as m:
             m.get(self.url, status=200)
             resp = await self.session.get(self.url, data=generator_value)
             self.assertEqual(resp.status, 200)
@@ -383,7 +380,7 @@ class AIOResponsesTestCase(AsyncTestCase):
             self.assertEqual(request.kwargs, {"allow_redirects": True, "data": generator_value})
 
     async def test_request_retrieval_in_case_no_response(self):
-        with aioresponses() as m:
+        async with aioresponses() as m:
             with self.assertRaises(ClientConnectionError):
                 await self.session.get(self.url)
 
@@ -397,7 +394,7 @@ class AIOResponsesTestCase(AsyncTestCase):
         async def do_request(session):
             return await session.get(self.url)
 
-        with aioresponses():
+        async with aioresponses():
             coro = do_request(self.session)
             await self.session.close()
 
@@ -626,7 +623,7 @@ class AIOResponsesTestCase(AsyncTestCase):
             await asyncio.sleep(uniform(0.1, 1))
             return CallbackResult(body="test")
 
-        with aioresponses() as mocked:
+        async with aioresponses() as mocked:
             for i in range(20):
                 mocked.get(f"http://example.org/id-{i}", callback=random_sleep_cb)
 

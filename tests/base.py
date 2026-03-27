@@ -2,16 +2,6 @@ import asyncio
 from unittest import IsolatedAsyncioTestCase
 
 
-def fail_on(**kw):  # noqa
-    def outer(fn):
-        def inner(*args, **kwargs):
-            return fn(*args, **kwargs)
-
-        return inner
-
-    return outer
-
-
 class AsyncTestCase(IsolatedAsyncioTestCase):
     """Asynchronous test case class that covers up differences in usage
     between unittest (starting from Python 3.8) and asynctest.

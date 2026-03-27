@@ -10,6 +10,7 @@ from aiohttp import web, hdrs
 from aiohttp.connector import TCPConnector
 from aiohttp.resolver import ThreadedResolver, AsyncResolver
 from aiohttp.test_utils import TestServer
+from aiohttp.client_exceptions import ClientConnectionError
 from multidict import MultiDict
 from yarl import URL
 
@@ -202,28 +203,8 @@ class aioresponses:
             original = self._originals[type(resolver_self)]
             return await original(resolver_self, host, port, family)
 
+        print(f"No mock registered for host {host!r}")
         raise OSError(f"Connection refused: no mock registered for host {host!r}")
-        # consume the registration
-        if isinstance(repeat, bool):
-            if not repeat:
-                del self._host_map[host]
-        else:
-            repeat -= 1
-            if repeat == 0:
-                del self._host_map[host]
-            else:
-                self._host_map[host] = (target_ip, target_port, repeat)
-
-        return [
-            {
-                "hostname": host,
-                "host": target_ip,
-                "port": target_port,
-                "family": family,
-                "proto": 0,
-                "flags": 0,
-            }
-        ]
 
     # ------------------------------------------------------------------
     # Helpers
@@ -250,17 +231,20 @@ class aioresponses:
     async def _dispatch(self, request: web.Request) -> web.Response:
         handler = self.handlers.get(request.path)
         if handler is None:
-            return web.Response(status=404, text=f"No mock for path {request.path!r}")
+            # this should raise ClientConnectionError on the other side
+            if request.transport:
+                request.transport.close()
+            return web.Response(status=404)
         return await handler(request)
 
     # ------------------------------------------------------------------
     # Mock registration
     # ------------------------------------------------------------------
 
-    def _register(
+    def add(
         self,
         url: "URL | str",
-        method: str,
+        method: str = hdrs.METH_GET,
         status: int = 200,
         body: "str | bytes" = b"",
         payload: "dict | None" = None,
@@ -310,29 +294,25 @@ class aioresponses:
         self.handlers[path] = handler
 
     def get(self, url, **kwargs):
-        self._register(url, hdrs.METH_GET, **kwargs)
+        self.add(url, method=hdrs.METH_GET, **kwargs)
 
     def post(self, url, **kwargs):
-        self._register(url, hdrs.METH_POST, **kwargs)
+        self.add(url, method=hdrs.METH_POST, **kwargs)
 
     def put(self, url, **kwargs):
-        self._register(url, hdrs.METH_PUT, **kwargs)
+        self.add(url, method=hdrs.METH_PUT, **kwargs)
 
     def patch(self, url, **kwargs):
-        self._register(url, hdrs.METH_PATCH, **kwargs)
+        self.add(url, method=hdrs.METH_PATCH, **kwargs)
 
     def delete(self, url, **kwargs):
-        self._register(url, hdrs.METH_DELETE, **kwargs)
+        self.add(url, method=hdrs.METH_DELETE, **kwargs)
 
     def head(self, url, **kwargs):
-        self._register(url, hdrs.METH_HEAD, **kwargs)
+        self.add(url, method=hdrs.METH_HEAD, **kwargs)
 
     def options(self, url, **kwargs):
-        self._register(url, hdrs.METH_OPTIONS, **kwargs)
-
-    # add() alias used by some tests
-    def add(self, url, method=hdrs.METH_GET, **kwargs):
-        self._register(url, method, **kwargs)
+        self.add(url, method=hdrs.METH_OPTIONS, **kwargs)
 
     # ------------------------------------------------------------------
     # Assertions
