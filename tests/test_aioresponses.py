@@ -33,7 +33,7 @@ from .base import AsyncTestCase
 @ddt
 class AIOResponsesTestCase(AsyncTestCase):
     async def setup(self):
-        self.url = "http://example.com/api?foo=bar" # removed fragment
+        self.url = "http://example.com/api?foo=bar"  # removed fragment
         self.session = ClientSession()
 
     async def teardown(self):
@@ -78,7 +78,10 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertEqual(response.status, 204)
 
     @unpack
-    @data(("http://example.com", "/api?foo=bar#fragment"), ("http://example.com/", "/api?foo=bar#fragment"))
+    @data(
+        ("http://example.com", "/api?foo=bar#fragment"),
+        ("http://example.com/", "/api?foo=bar#fragment"),
+    )
     @aioresponses()
     async def test_base_url(self, base_url, relative_url, m):
         m.get(self.url, status=200)
@@ -118,10 +121,15 @@ class AIOResponsesTestCase(AsyncTestCase):
     async def test_returned_response_raw_headers(self, m):
         m.get(self.url, content_type="text/html", headers={"Connection": "keep-alive"})
         response = await self.session.get(self.url)
-        # we assert that response raw headers contains the expected headers, but we do not assert that they 
+        # we assert that response raw headers contains the expected headers, but we do not assert that they
         # are the only ones, since aiohttp could add some extra headers, such as content-length
-        expected_raw_headers = ((b"Connection", b"keep-alive"), (hdrs.CONTENT_TYPE.encode(), b"text/html"))
-        self.assertTrue(all(header in response.raw_headers for header in expected_raw_headers))
+        expected_raw_headers = (
+            (b"Connection", b"keep-alive"),
+            (hdrs.CONTENT_TYPE.encode(), b"text/html"),
+        )
+        self.assertTrue(
+            all(header in response.raw_headers for header in expected_raw_headers)
+        )
 
     @aioresponses()
     async def test_raise_for_status(self, m):
@@ -148,7 +156,9 @@ class AIOResponsesTestCase(AsyncTestCase):
 
         expected_url = "http://example.com/api?x=42#fragment"
         m.get(expected_url)
-        response = await self.session.get("http://example.com/api#fragment", params={"x": 42})
+        response = await self.session.get(
+            "http://example.com/api#fragment", params={"x": 42}
+        )
         self.assertIsInstance(response, ClientResponse)
         self.assertEqual(response.status, 200)
         self.assertEqual(len(m.requests), 2)
@@ -185,18 +195,36 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertEqual(response.status, 200)
         response_data = await response.json()
         self.assertEqual(response_data, payload)
-        m.assert_called_once_with(self.url, method="POST", data=payload, headers={"User-Agent": "aioresponses"})
+        m.assert_called_once_with(
+            self.url,
+            method="POST",
+            data=payload,
+            headers={"User-Agent": "aioresponses"},
+        )
         # Wrong data
         with self.assertRaises(AssertionError):
-            m.assert_called_once_with(self.url, method="POST", data=body, headers={"User-Agent": "aioresponses"})
+            m.assert_called_once_with(
+                self.url,
+                method="POST",
+                data=body,
+                headers={"User-Agent": "aioresponses"},
+            )
         # Wrong url
         with self.assertRaises(AssertionError):
             m.assert_called_once_with(
-                "http://httpbin.org/", method="POST", data=payload, headers={"User-Agent": "aioresponses"}
+                "http://httpbin.org/",
+                method="POST",
+                data=payload,
+                headers={"User-Agent": "aioresponses"},
             )
         # Wrong headers
         with self.assertRaises(AssertionError):
-            m.assert_called_once_with(self.url, method="POST", data=payload, headers={"User-Agent": "aiorequest"})
+            m.assert_called_once_with(
+                self.url,
+                method="POST",
+                data=payload,
+                headers={"User-Agent": "aiorequest"},
+            )
 
     @aioresponses()
     async def test_streaming(self, m):
@@ -227,7 +255,7 @@ class AIOResponsesTestCase(AsyncTestCase):
         body = b"\x00\x01\x02\x80\x81\x82\x83\x84\x85"
 
         def callback(url, **kwargs):
-           return CallbackResult(body=body)
+            return CallbackResult(body=body)
 
         m.get(self.url, callback=callback)
         resp = await self.session.get(self.url)
@@ -360,24 +388,31 @@ class AIOResponsesTestCase(AsyncTestCase):
             pass
 
         m.get(self.url, body="Test")
-        old_class = self.session._response_class  # NOTE: now is not necessary to mock the behaviour in
+        old_class = (
+            self.session._response_class
+        )  # NOTE: now is not necessary to mock the behaviour in
         # aioresponses, will inherit from aiohttp
         self.session._response_class = CustomClientResponse
         resp = await self.session.get(self.url)
         self.session._response_class = old_class
         self.assertTrue(isinstance(resp, CustomClientResponse))
 
-
     @aioresponses()
     async def test_request_should_match_regexp(self, mocked):
-        mocked.get(re.compile(r"^http://example\.com/api\?foo=.*$"), payload={}, status=200)
+        mocked.get(
+            re.compile(r"^http://example\.com/api\?foo=.*$"), payload={}, status=200
+        )
 
         response = await self.request(self.url)
         self.assertEqual(response.status, 200)
 
     @aioresponses()
     async def test_request_does_not_match_regexp(self, mocked):
-        mocked.get(re.compile(r"^http://exampleexample\.com/api\?foo=.*$"), payload={}, status=200)
+        mocked.get(
+            re.compile(r"^http://exampleexample\.com/api\?foo=.*$"),
+            payload={},
+            status=200,
+        )
         with self.assertRaises(ClientConnectionError):
             await self.request(self.url)
 
@@ -485,7 +520,6 @@ class AIOResponsesTestCase(AsyncTestCase):
         m.assert_any_call(self.url)
         with self.assertRaises(AssertionError):
             m.assert_any_call(http_bin_url)
-
 
     async def test_possible_race_condition(self):
         async def random_sleep_cb(url, **kwargs):
@@ -646,10 +680,13 @@ class AIOResponseRedirectTest(AsyncTestCase):
         async with aioresponses(passthrough_unmatched=True) as m:
             m.post(URL(matched_url), status=200)
             mocked_response = await self.session.post(URL(matched_url))
-            response = await self.session.get(URL(unmatched_url), params=params_unmatched)
+            response = await self.session.get(
+                URL(unmatched_url), params=params_unmatched
+            )
             self.assertEqual(response.status, 200)
             self.assertEqual(str(response.url), "https://httpbin.org/get?foo=bar")
             self.assertEqual(mocked_response.status, 200)
+
 
 class ApiClient:
     def __init__(self, session: ClientSession):
@@ -659,6 +696,7 @@ class ApiClient:
         async with session.get(url) as response:
             response.raise_for_status()
             return await response.json()
+
 
 @pytest.mark.asyncio
 async def test_get_activates_mock_after_session_created():

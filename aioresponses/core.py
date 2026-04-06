@@ -7,13 +7,14 @@ import inspect
 
 
 import aiohttp
-from aiohttp import ClientResponse, web, hdrs
-from aiohttp.connector import TCPConnector
+from aiohttp import ClientRequest, ClientResponse, web, hdrs
+from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.resolver import ThreadedResolver, AsyncResolver
 from aiohttp.test_utils import TestServer
 from aiohttp.web_request import Request
 from yarl import URL
-from typing import Callable, Optional, Type, Union
+from typing import Any, Awaitable, Callable, Optional, Type, Union
 from .compat import merge_params, normalize_url
 
 
@@ -23,15 +24,17 @@ from .compat import merge_params, normalize_url
 
 
 class CallbackResult:
-
-    def __init__(self, method: str = hdrs.METH_GET,
-                 status: int = 200,
-                 body: Union[str, bytes] = '',
-                 content_type: str = 'application/json',
-                 payload: dict | None = None,
-                 headers: dict | None = None,
-                 response_class: Optional[Type[ClientResponse]] = None,
-                 reason: Optional[str] = None):
+    def __init__(
+        self,
+        method: str = hdrs.METH_GET,
+        status: int = 200,
+        body: Union[str, bytes] = "",
+        content_type: str = "application/json",
+        payload: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        response_class: Optional[Type[ClientResponse]] = None,
+        reason: Optional[str] = None,
+    ):
         self.method = method
         self.status = status
         self.body = body
@@ -45,6 +48,8 @@ class CallbackResult:
 # ---------------------------------------------------------------------------
 # aioresponses
 # ---------------------------------------------------------------------------
+handler_type = Callable[[web.Request], Awaitable[web.Response]]
+
 
 class aioresponses:
     """
@@ -59,7 +64,9 @@ class aioresponses:
          bypass the patch.
     """
 
-    def __init__(self, passthrough=None, **kwargs):
+    def __init__(
+        self, passthrough: list[str] | None = None, **kwargs: dict[str, Any]
+    ) -> None:
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
         for p in self._passthrough_urls:
@@ -73,19 +80,21 @@ class aioresponses:
         self.param = kwargs.pop("param", None)
         self.passthrough_unmatched = kwargs.pop("passthrough_unmatched", False)
 
-        # {host: (target_ip, target_port, repeat)}
-        self._host_map: dict[str, tuple[str, int, bool | int]] = {}
-        self._patterns_map: dict[Pattern[str], tuple[str, int, bool | int]] = {}
+        # {host: (target_ip, target_port)}
+        self._host_list: list[str] = []
+        self._patterns_list: list[Pattern[str]] = []
 
         # {path: async handler}
-        self.handlers: dict[tuple[str, str], object] = {}
-        self.patterns_handler: dict[tuple[Pattern[str], str], object] = {}
+        self.handlers: dict[tuple[str, str], handler_type | list[handler_type]] = {}
+        self.patterns_handler: dict[
+            tuple[Pattern[str], str], handler_type | list[handler_type]
+        ] = {}
 
         # recorded requests: {(METHOD, URL): [web.Request, ...]}
         self.requests: dict[tuple[str, URL], list[Request]] = {}
 
         self.server: TestServer | None = None
-        self._patchers: list = []
+        self._patchers: list[Any] = []
 
     # ------------------------------------------------------------------
     # Context manager
@@ -97,19 +106,30 @@ class aioresponses:
         app.router.add_route("*", "/{tail:.*}", self._dispatch)
         self.server = TestServer(app)
         await self.server.start_server()
+        assert isinstance(self.server.host, str) and isinstance(self.server.port, int)  # pyright: ignore[reportUnknownMemberType]
+        self.server_host = self.server.host
+        self.server_port = self.server.port
 
         # Patch resolve() on BOTH resolver classes at the class level.
         # This affects every existing and future instance automatically.
-        self._originals = {}
+        self._originals_resolver: dict[
+            Type[AbstractResolver],
+            Callable[[Any, str, int, Any], Awaitable[list[ResolveResult]]],
+        ] = {}
 
         for resolver_cls in (ThreadedResolver, AsyncResolver):
             # Capture the original class method
             original_resolve = resolver_cls.resolve
-            self._originals[resolver_cls] = original_resolve
+            self._originals_resolver[resolver_cls] = original_resolve
 
             # Use a closure to capture the correct 'self' (aioresponses instance)
             # while receiving 'resolver_self' (the resolver instance).
-            async def mock_resolve(resolver_self, host, port=0, family=socket.AF_INET):
+            async def mock_resolve(
+                resolver_self: AbstractResolver,
+                host: str,
+                port: int = 0,
+                family: socket.AddressFamily = socket.AF_INET,
+            ) -> list[ResolveResult]:
                 return await self._fake_resolve(resolver_self, host, port, family)
 
             p = patch.object(resolver_cls, "resolve", mock_resolve)
@@ -118,10 +138,10 @@ class aioresponses:
 
         # Patch _get_ssl_context so that https:// requests to mocked hosts
         # connect to our plain-HTTP TestServer without TLS.
-        original_get_ssl_context = TCPConnector._get_ssl_context
-        self._originals[TCPConnector] = original_get_ssl_context
+        original_get_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
+        self._original_ssl_context = original_get_ssl_context
 
-        def mock_get_ssl_context(connector_self, req):
+        def mock_get_ssl_context(connector_self: TCPConnector, req: ClientRequest):
             return self._fake_ssl_context(connector_self, req)
 
         p_ssl = patch.object(TCPConnector, "_get_ssl_context", mock_get_ssl_context)
@@ -134,103 +154,97 @@ class aioresponses:
 
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[Any],
+    ) -> None:
         for p in self._patchers:
             p.stop()
         self._patchers.clear()
         if self.server:
             await self.server.close()
             self.server = None
-        self._host_map.clear()
-        self._patterns_map.clear()
+        self._host_list.clear()
+        self._patterns_list.clear()
         self.handlers.clear()
 
     # Decorator support
-    def __call__(self, f):
+    def __call__(
+        self, f: Callable[..., Awaitable[Any]]
+    ) -> Callable[..., Awaitable[Any]]:
         @wraps(f)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             async with self as m:
                 if self.param:
-                    kwargs[self.param] = m
+                    kwargs[self.param] = m  # pyright: ignore[reportArgumentType]
                 else:
                     if args and hasattr(args[0], f.__name__):
                         args = (args[0], m) + args[1:]
                     else:
                         args = args + (m,)
                 return await f(*args, **kwargs)
+
         return wrapper
 
     # ------------------------------------------------------------------
     # DNS patch
     # ------------------------------------------------------------------
 
-    def _fake_ssl_context(self, connector_self, req: Request):
+    def _fake_ssl_context(
+        self, connector_self: TCPConnector, req: ClientRequest
+    ) -> Optional[SSLContext]:
         """Return None (no TLS) for mocked hosts, real SSL context otherwise."""
         host = req.url.raw_host
-        if host in self._host_map or self._match_pattern(str(req.url)) is not None:
+        if host in self._host_list or self._match_pattern(str(req.url)):
             # Our TestServer is plain HTTP — disable TLS for mocked hosts.
             return None
         # For unmocked hosts, use the original method to get the correct context.
-        original = self._originals[TCPConnector]
+        original = self._original_ssl_context
         return original(connector_self, req)
 
-    def _match_pattern(self, host: str) -> tuple[str, int, bool | int] | None:
-        for pattern, target in self._patterns_map.items():
+    def _match_pattern(self, host: str) -> bool:
+        for pattern in self._patterns_list:
             if pattern.match(host):
-                return target
-        return None
+                return True
+        return False
 
     async def _fake_resolve(
         self,
-        resolver_self: "ThreadedResolver | AsyncResolver",
+        resolver_self: AbstractResolver,
         host: str,
         port: int = 0,
         family: socket.AddressFamily = socket.AF_INET,
-    ) -> list[dict]:
+    ) -> list[ResolveResult]:
         """Replacement for resolver.resolve() on both resolver classes."""
-        target = self._host_map.get(host)
-        if target is not None:
-            target_ip, target_port, repeat = target
+        if host in self._host_list or self._match_pattern(host):
             return [
-                {
-                    "hostname": host,
-                    "host": target_ip,
-                    "port": target_port,
-                    "family": family,
-                    "proto": 0,
-                    "flags": 0,
-                }
+                ResolveResult(
+                    hostname=host,
+                    host=self.server_host,
+                    port=self.server_port,
+                    family=family,
+                    proto=0,
+                    flags=0,
+                )
             ]
 
-        target = self._match_pattern(host)
-        if target is not None:
-            target_ip, target_port, repeat = target
-
-            return [
-                {
-                    "hostname": host,
-                    "host": target_ip,
-                    "port": target_port,
-                    "family": family,
-                    "proto": 0,
-                    "flags": 0,
-                }
-            ]
         # Not mocked — check if it's a passthrough host or we allow unmatched.
         if host in self._passthrough_hosts or self.passthrough_unmatched:
-            original = self._originals[type(resolver_self)]
+            original = self._originals_resolver[type(resolver_self)]
             return await original(resolver_self, host, port, family)
 
         return [
-                {
-                    "hostname": host,
-                    "host": self.server.host,
-                    "port": self.server.port,
-                    "family": family,
-                    "proto": 0,
-                    "flags": 0,
-                }
-            ]
+            {
+                "hostname": host,
+                "host": self.server_host,
+                "port": self.server_port,
+                "family": family,
+                "proto": 0,
+                "flags": 0,
+            }
+        ]
 
     # ------------------------------------------------------------------
     # Helpers
@@ -243,6 +257,7 @@ class aioresponses:
         its DNS cache.  This ensures pre-patch resolutions are not reused.
         """
         import gc
+
         for obj in gc.get_objects():
             if isinstance(obj, aiohttp.TCPConnector):
                 try:
@@ -262,16 +277,19 @@ class aioresponses:
         # PayloadAccessError on the stream once the response cycle completes.
         request._captured_body = await request.read() if request.can_read_body else b""
         self.requests[key].append(request)
-        if isinstance(self.handlers.get((request.path, request.method)), list):
-            if len(self.handlers[(request.path, request.method)]) == 0:
-                handler = None
+        selected_handler = self.handlers.get((request.path, request.method))
+        if isinstance(selected_handler, list):
+            if len(selected_handler) == 0:
+                handler: handler_type | None = None
             else:
-                handler = self.handlers[(request.path, request.method)][0]
+                handler = selected_handler[0]
                 # we remove the first element of the list, so the next request will match the next handler in the list
-                self.handlers[(request.path, request.method)] = self.handlers[(request.path, request.method)][1:]
+                self.handlers[(request.path, request.method)] = self.handlers[
+                    (request.path, request.method)
+                ][1:]
 
         else:
-            handler = self.handlers.get((request.path, request.method))
+            handler = selected_handler
         if handler is None:
             # Check if there's a pattern handler for this request
             for (pattern, method), pattern_handler in self.patterns_handler.items():
@@ -288,11 +306,12 @@ class aioresponses:
                     break
 
         if handler is None:
-
             # this should raise ClientConnectionError on the other side
             if request.transport:
                 request.transport.close()
-            return web.Response(status=502, text="No handler registered for this request.")
+            return web.Response(
+                status=502, text="No handler registered for this request."
+            )
         return await handler(request)
 
     # ------------------------------------------------------------------
@@ -317,7 +336,7 @@ class aioresponses:
             url = URL(url)
 
         if isinstance(url, Pattern):
-            self._patterns_map[url] = (self.server.host, self.server.port, repeat)
+            self._patterns_list.append(url)
 
         assert self.server is not None, (
             "Server not started — use `async with aioresponses() as m:` first."
@@ -327,8 +346,7 @@ class aioresponses:
             assert host, f"Cannot extract host from {url!r}"
 
             # Map this host → our test server
-            self._host_map[host] = (self.server.host, self.server.port, repeat)
-
+            self._host_list.append(host)
 
         if payload is not None:
             body = _json.dumps(payload).encode()
@@ -338,9 +356,6 @@ class aioresponses:
         resp_headers = dict(headers or {})
         if payload is not None and "Content-Type" not in resp_headers:
             content_type = "application/json"
-
-        
-            
 
         self._body = body
         self._status = status
@@ -368,8 +383,14 @@ class aioresponses:
                 _content_type = content_type
                 _reason = reason
 
-            return web.Response(status=_status, body=_body, headers=_headers, reason=_reason, content_type=_content_type)
-        
+            return web.Response(
+                status=_status,
+                body=_body,
+                headers=_headers,
+                reason=_reason,
+                content_type=_content_type,
+            )
+
         if repeat is True:
             if isinstance(url, Pattern):
                 self.patterns_handler[url] = handler
@@ -391,7 +412,6 @@ class aioresponses:
                 self.handlers[path, self._method] += handlers
             else:
                 self.handlers[path, self._method] = handlers
-            
 
     def get(self, url, **kwargs):
         self.add(url, method=hdrs.METH_GET, **kwargs)
@@ -462,6 +482,7 @@ class aioresponses:
             if isinstance(data, dict):
                 # aiohttp may send dicts as form-encoded or JSON; try both.
                 from urllib.parse import urlencode, parse_qs
+
                 form_encoded = urlencode(data).encode()
                 json_encoded = _json.dumps(data).encode()
                 # Also accept order-insensitive form comparison
@@ -485,7 +506,14 @@ class aioresponses:
                 )
         actual_headers = dict(request.headers)
         # we remove the headers added by aiohttp if there are not specified in the expected headers
-        for header in ("Content-Length", "Content-Type", "Host", "Accept","Accept-Encoding", "User-Agent"):
+        for header in (
+            "Content-Length",
+            "Content-Type",
+            "Host",
+            "Accept",
+            "Accept-Encoding",
+            "User-Agent",
+        ):
             if header not in (headers or {}):
                 # this should be deprecated in the future, but for now we want to avoid breaking existing tests that don't specify these headers
                 actual_headers.pop(header, None)

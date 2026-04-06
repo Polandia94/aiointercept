@@ -1,6 +1,7 @@
 from multidict import MultiDict
 from yarl import URL
 
+
 def normalize_url(url: "URL | str") -> URL:
     """Normalize url to make comparisons."""
     url = URL(url)
@@ -9,7 +10,7 @@ def normalize_url(url: "URL | str") -> URL:
     return url.with_query(sorted(url.query.items()))
 
 
-def merge_params(url: "URL | str", params: "dict | None" = None) -> URL:
+def merge_params(url: "URL | str", params: "dict[str, str] | None" = None) -> URL:
     url = URL(url)
     if params:
         query_params = MultiDict(url.query)
