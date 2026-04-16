@@ -1,5 +1,5 @@
 [project]
-name = "aioresponse-server"
+name = "aiointercept"
 version = "0.1.0"
 description = ""
 authors = [
@@ -22,7 +22,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aioresponses"]
+packages = ["aiointercept"]
 
 [dependency-groups]
 tests = [

@@ -50,7 +50,7 @@ class CallbackResult:
 handler_type = Callable[[web.Request], Awaitable[web.Response]]
 
 
-class aioresponses:
+class aiointercept:
     """
     Mock aiohttp requests by redirecting DNS to a local aiohttp.web test server.
     """
@@ -64,7 +64,7 @@ class aioresponses:
     ) -> None:
         if kwargs:
             warnings.warn(
-                "Passing extra parameters to aioresponses via kwargs is deprecated and will be removed in a future release.",
+                "Passing extra parameters to aiointercept via kwargs is deprecated and will be removed in a future release.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -98,7 +98,7 @@ class aioresponses:
         self.server: TestServer | None = None
         self._patchers: list[Any] = []
 
-    async def __aenter__(self) -> "aioresponses":
+    async def __aenter__(self) -> "aiointercept":
         app = web.Application()
         # we add every route to the app.
         app.router.add_route("*", "/{tail:.*}", self._dispatch)
@@ -121,7 +121,7 @@ class aioresponses:
             original_resolve = resolver_cls.resolve
             self._originals_resolver[resolver_cls] = original_resolve
 
-            # Use a closure to capture the correct 'self' (aioresponses instance)
+            # Use a closure to capture the correct 'self' (aiointercept instance)
             # while receiving 'resolver_self' (the resolver instance).
             async def mock_resolve(
                 resolver_self: AbstractResolver,
@@ -263,11 +263,19 @@ class aioresponses:
         self.requests.setdefault(key, [])
         request._captured_body = await request.read() if request.can_read_body else b""
         try:
-            json = json_module.loads(request._captured_body) if request._captured_body else None
+            json = (
+                json_module.loads(request._captured_body)  # type: ignore[attr-defined]
+                if request._captured_body  # type: ignore[attr-defined]
+                else None
+            )
         except Exception:
             json = None
         # this kwargs will be removed, should be deprecated in the future
-        request.kwargs = {"headers": request.headers, "query": dict(request.query), "json": json}
+        request.kwargs = {
+            "headers": request.headers,
+            "query": dict(request.query),
+            "json": json,
+        }
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
         self.requests[key].append(request)
@@ -342,7 +350,7 @@ class aioresponses:
             self._patterns_list.append(url)
 
         assert self.server is not None, (
-            "Server not started — use `async with aioresponses() as m:` first."
+            "Server not started — use `async with aiointercept() as m:` first."
         )
         if isinstance(url, URL):
             host = url.host

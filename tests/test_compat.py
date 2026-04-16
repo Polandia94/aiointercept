@@ -4,7 +4,7 @@ from unittest import TestCase
 from ddt import data, ddt, unpack  # type: ignore[import-untyped]
 from yarl import URL
 
-from aioresponses.compat import merge_params, normalize_url
+from aiointercept.compat import merge_params, normalize_url
 
 
 def get_url(url: str, as_str: bool) -> URL | str:

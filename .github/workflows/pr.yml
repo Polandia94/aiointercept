@@ -23,7 +23,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Mypy
-        run: uv run mypy aioresponses
+        run: uv run mypy aiointercept
 
   test:
     runs-on: ubuntu-latest
