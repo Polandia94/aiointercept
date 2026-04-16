@@ -44,3 +44,17 @@ is passing the tests on:
 
 https://github.com/cortega26/PDF-Text-Analyzer
 https://github.com/mxr/reconciler-for-ynab
+https://github.com/pratik-choudhari/Financial-news-scraper /with some unrelated changes because is broken
+https://github.com/dorianrod/GitReviewLens
+
+https://github.com/natekspencer/pylitterbot required some changes:
+- there were raising a custom exception on request on test_litter_robot_5_dispatch_command_failure, and that is not supported.
+- - However, they were try to mimick a 500 with certain json that was supported
+- There were some calls to localhost, that should be to https://localhost. This was
+also a fixable error on the tests
+
+
+Broken on main
+https://github.com/symphony-youri/symphony-api-client-python.git
+
+too complex to work: https://github.com/mguidon/osparc-simcore

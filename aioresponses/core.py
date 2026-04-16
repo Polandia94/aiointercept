@@ -251,19 +251,25 @@ class aioresponses:
         its DNS cache.  This ensures pre-patch resolutions are not reused.
         """
         for obj in gc.get_objects():
-            if isinstance(obj, aiohttp.TCPConnector):
-                try:
-                    obj.clear_dns_cache()
-                except Exception:
-                    pass
+            if not issubclass(type(obj), aiohttp.TCPConnector):
+                continue
+            try:
+                obj.clear_dns_cache()
+            except Exception:
+                pass
 
     async def _dispatch(self, request: web.Request) -> web.Response:
         key = (request.method.upper(), normalize_url(request.url))
         self.requests.setdefault(key, [])
-        request.kwargs = {"headers": request.headers, "query": dict(request.query)}
+        request._captured_body = await request.read() if request.can_read_body else b""
+        try:
+            json = json_module.loads(request._captured_body) if request._captured_body else None
+        except Exception:
+            json = None
+        # this kwargs will be removed, should be deprecated in the future
+        request.kwargs = {"headers": request.headers, "query": dict(request.query), "json": json}
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        request._captured_body = await request.read() if request.can_read_body else b""
         self.requests[key].append(request)
         selected_handler = self.handlers.get((request.path, request.method))
         if isinstance(selected_handler, list):
@@ -347,24 +353,21 @@ class aioresponses:
 
         if json is not None:
             body = json_module.dumps(json).encode()
-            content_type = "application/json"
         elif payload is not None:
             body = json_module.dumps(payload).encode()
         elif isinstance(body, str):
             body = body.encode()
-            if content_type is None:
-                content_type = "application/json"
 
         resp_headers = dict(headers or {})
-        if payload is not None and "Content-Type" not in resp_headers:
+        if not content_type and body and "Content-Type" not in resp_headers:
             content_type = "application/json"
 
         async def handler(request: web.Request) -> web.Response:
             if callable(callback):
                 if inspect.iscoroutinefunction(callback):
-                    result = await callback(url, **kwargs)
+                    result = await callback(url, **request.kwargs)  # type: ignore[attr-defined]
                 else:
-                    result = callback(url, **kwargs)
+                    result = callback(url, **request.kwargs)  # type: ignore[attr-defined]
                 _status = result.status
                 _body = result.body
                 _headers = result.headers or {}
@@ -446,6 +449,11 @@ class aioresponses:
 
     def options(self, url, **kwargs):
         self.add(url, method=hdrs.METH_OPTIONS, **kwargs)
+
+    def clear(self):
+        self.requests.clear()
+        self.handlers.clear()
+        self.patterns_handler.clear()
 
     def assert_called(self):
         if not self.requests:
