@@ -96,6 +96,8 @@ def _shared_ssl_context(
 
     for inst in instances:
         if host in inst._host_list or inst._match_pattern(url_str):
+            if req.url.scheme == "https":
+                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
             return None
 
     for inst in instances:
@@ -303,7 +305,8 @@ class aiointercept:
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
         self.requests[key].append(request)
-        selected_handler = self.handlers.get((request.path, request.method))
+        url_str = str(url)
+        selected_handler = self.handlers.get((url_str, request.method))
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: handler_type | None = None
@@ -476,8 +479,8 @@ class aiointercept:
             if isinstance(url, Pattern):
                 self.patterns_handler[url, method] = handler
                 return
-            path = url.path or "/"
-            self.handlers[path, method] = handler
+            handler_url = str(normalize_url(url))
+            self.handlers[handler_url, method] = handler
         else:
             if repeat is False:
                 repeat = 1
@@ -500,18 +503,18 @@ class aiointercept:
                 else:
                     self.patterns_handler[url, method] = handlers
                 return
-            path = url.path or "/"
-            if (path, method) in self.handlers:
-                handlers_list = self.handlers[(path, method)]
+            handler_url = str(normalize_url(url))
+            if (handler_url, method) in self.handlers:
+                handlers_list = self.handlers[(handler_url, method)]
                 if isinstance(handlers_list, list):
                     handlers_list = typing.cast(list[handler_type], handlers_list)
                     handlers_list += handlers
                 else:
                     raise ValueError(
-                        f"Existing handler for {path} {method} has repeat=True, cannot add more handlers to it."
+                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.handlers[path, method] = handlers
+                self.handlers[handler_url, method] = handlers
 
     def get(self, url, **kwargs):
         self.add(url, method=hdrs.METH_GET, **kwargs)

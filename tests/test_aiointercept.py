@@ -648,9 +648,23 @@ async def test_assert_any_call_with_params():
     url = "http://anycallparams.test/items"
     async with ClientSession() as session:
         async with aiointercept(mock_external_urls=True) as m:
-            m.get(url, status=200)
+            m.get(url + "?key=val", status=200)
             await session.get(url, params={"key": "val"})
             m.assert_any_call(url, params={"key": "val"})
+
+
+async def test_url_with_different_query_param():
+    """Registering ?page=1 (repeat=True) must not serve a request to ?page=2."""
+    url = "http://queryparams.test/search?q=test&page=1"
+    diff_url = "http://queryparams.test/search?q=test&page=2"
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get(url, status=200, repeat=True)
+            resp = await session.get(url)
+            assert resp.status == 200
+            m.assert_called_with(url)
+            with pytest.raises(ClientConnectionError):
+                await session.get(diff_url)
 
 
 # ---------------------------------------------------------------------------
@@ -905,7 +919,7 @@ async def test_duplicate_query_keys_preserved_in_callback():
 
     async with ClientSession() as session:
         async with aiointercept(mock_external_urls=True) as m:
-            m.get("http://qs.test/", callback=cb, repeat=True)
+            m.get("http://qs.test/?a=1&a=2", callback=cb)
             await session.get("http://qs.test/?a=1&a=2")
 
     # dict(MultiDict) keeps only the last value — the bug makes this {"a": "2"}
