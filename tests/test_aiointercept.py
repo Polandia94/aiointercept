@@ -6,6 +6,9 @@ import aiohttp
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientConnectionError
 from yarl import URL
+from aiohttp.resolver import ThreadedResolver, AsyncResolver
+import asyncio
+from random import uniform
 
 from aiointercept import aiointercept, CallbackResult
 
@@ -163,6 +166,14 @@ async def test_repeat_integer(n):
                 assert resp.status == 200
             with pytest.raises(ClientConnectionError):
                 await session.get("http://repeat.test/n")
+
+
+async def test_repeat_zero():
+    """repeat=0 should fail"""
+    async with ClientSession() as _:
+        async with aiointercept(mock_external_urls=True) as m:
+            with pytest.raises(ValueError):
+                m.get("http://repeat.test/once", status=200, repeat=0)
 
 
 # ---------------------------------------------------------------------------
@@ -832,15 +843,80 @@ async def test_passthrough_unmatched_https_with_patterns():
             assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
-# Concurrent requests (race condition)
-# ---------------------------------------------------------------------------
+async def test_nested_mock_external_urls_instances():
+    """Two nested mock_external_urls=True instances each intercept their own host,
+    and the class-level resolver is fully restored after both exit."""
+
+    real_threaded = ThreadedResolver.resolve
+    real_async = AsyncResolver.resolve
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as outer:
+            outer.get("http://outer.test/", status=200, body=b"outer", repeat=True)
+            async with aiointercept(mock_external_urls=True) as inner:
+                inner.get("http://inner.test/", status=200, body=b"inner")
+
+                resp_outer = await session.get("http://outer.test/")
+                assert resp_outer.status == 200
+                assert await resp_outer.read() == b"outer"
+
+                resp_inner = await session.get("http://inner.test/")
+                assert resp_inner.status == 200
+                assert await resp_inner.read() == b"inner"
+
+            # After inner exits, outer still works
+            resp_outer2 = await session.get("http://outer.test/")
+            assert resp_outer2.status == 200
+
+    # After both exit, class-level methods are fully restored
+    assert ThreadedResolver.resolve is real_threaded
+    assert AsyncResolver.resolve is real_async
+
+
+async def test_https_request_recorded_under_https_scheme():
+    """When X-Aiointercept-Orig-Scheme: https is present, _dispatch must record the
+    request under the https:// scheme so assert_called_with / m.requests lookups work."""
+    async with aiointercept(mock_external_urls=False) as m:
+        m.get("https://secure.test/data", status=200, body=b"secret")
+        async with ClientSession() as session:
+            # Simulate what _shared_ssl_context injects: connect directly to the
+            # test server but carry the header that marks the original scheme.
+            resp = await session.get(
+                f"{m.server_url}/data",
+                headers={"Host": "secure.test", "X-Aiointercept-Orig-Scheme": "https"},
+            )
+            assert resp.status == 200
+
+        https_key = ("GET", URL("https://secure.test/data"))
+        http_key = ("GET", URL("http://secure.test/data"))
+        assert https_key in m.requests, "request must be recorded under https:// scheme"
+        assert http_key not in m.requests, (
+            "should not appear under http:// when orig scheme is https"
+        )
+
+
+async def test_duplicate_query_keys_preserved_in_callback():
+    """Duplicate query params (?a=1&a=2) must both reach the callback, not be collapsed."""
+    seen_query = {}
+
+    def cb(url, **kwargs):
+        seen_query.update(kwargs.get("query", {}))
+        return CallbackResult(status=200)
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://qs.test/", callback=cb, repeat=True)
+            await session.get("http://qs.test/?a=1&a=2")
+
+    # dict(MultiDict) keeps only the last value — the bug makes this {"a": "2"}
+    # The fix should preserve both values, e.g. as a list: {"a": ["1", "2"]}
+    assert seen_query.get("a") == ["1", "2"], (
+        f"Expected both values for 'a', got: {seen_query.get('a')!r}"
+    )
 
 
 async def test_concurrent_requests_no_race():
     """Many concurrent requests to distinct mocked URLs all resolve correctly."""
-    import asyncio
-    from random import uniform
 
     async def random_sleep_cb(url, **kwargs):
         await asyncio.sleep(uniform(0.01, 0.1))

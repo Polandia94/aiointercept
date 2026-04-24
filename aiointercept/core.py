@@ -1,14 +1,14 @@
 import socket
+import threading
 from functools import wraps
 from re import Pattern
 import typing
-from unittest.mock import patch
 import json as json_module
 import inspect
 import warnings
 import gc
 from urllib.parse import parse_qs
-
+import logging
 
 import aiohttp
 from aiohttp import ClientRequest, ClientResponse, web, hdrs
@@ -22,8 +22,91 @@ from yarl import URL
 from typing import Any, Awaitable, Callable, Type
 from .compat import merge_params, normalize_url
 
+logger = logging.getLogger(__name__)
+
 _PROXY_REQ_DROP = frozenset(("host", "transfer-encoding", "x-aiointercept-orig-scheme"))
 _PROXY_RESP_DROP = frozenset(("transfer-encoding", "content-encoding"))
+
+# Module-level state for class-level patches shared across concurrent instances.
+# Only the first entering instance installs the patches; the last exiting one removes them.
+_patch_lock = threading.Lock()
+_patch_refcount: int = 0
+_real_threaded_resolve: Any = None
+_real_async_resolve: Any = None
+_real_ssl_context: Any = None
+_active_instances: "list[aiointercept]" = []
+
+
+def _make_resolve_result(
+    host: str, inst: "aiointercept", family: "socket.AddressFamily"
+) -> "ResolveResult":
+    return ResolveResult(
+        hostname=host,
+        host=inst.server_host,
+        port=inst.server_port,
+        family=family,
+        proto=0,
+        flags=0,
+    )
+
+
+def _pick_real_resolver(resolver_self: "AbstractResolver") -> Any:
+    return (
+        _real_threaded_resolve
+        if isinstance(resolver_self, ThreadedResolver)
+        else _real_async_resolve
+    )
+
+
+async def _shared_resolve(
+    resolver_self: "AbstractResolver",
+    host: str,
+    port: int = 0,
+    family: "socket.AddressFamily" = socket.AF_INET,
+) -> "list[ResolveResult]":
+    with _patch_lock:
+        instances = list(reversed(_active_instances))
+
+    for inst in instances:
+        if host in inst._host_list or inst._patterns_list:
+            return [_make_resolve_result(host, inst, family)]
+
+    for inst in instances:
+        if host in inst._passthrough_hosts or inst.passthrough_unmatched:
+            return await _pick_real_resolver(resolver_self)(
+                resolver_self, host, port, family
+            )
+
+    # No instance claims this host and none allow passthrough — redirect to
+    # the innermost instance's server so the client gets a clear connection error.
+    if instances:
+        return [_make_resolve_result(host, instances[0], family)]
+
+    return await _pick_real_resolver(resolver_self)(resolver_self, host, port, family)
+
+
+def _shared_ssl_context(
+    connector_self: "TCPConnector", req: "ClientRequest"
+) -> "SSLContext | None":
+    with _patch_lock:
+        instances = list(reversed(_active_instances))
+
+    host = req.url.raw_host
+    url_str = str(req.url)
+
+    for inst in instances:
+        if host in inst._host_list or inst._match_pattern(url_str):
+            return None
+
+    for inst in instances:
+        if inst._patterns_list and (
+            inst.passthrough_unmatched or host in inst._passthrough_hosts
+        ):
+            if req.url.scheme == "https":
+                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
+            return None
+
+    return _real_ssl_context(connector_self, req)  # type: ignore[misc]
 
 
 class CallbackResult:
@@ -99,7 +182,6 @@ class aiointercept:
         self.requests: dict[tuple[str, URL], list[Request]] = {}
 
         self.server: TestServer | None = None
-        self._patchers: list[Any] = []
 
     async def __aenter__(self) -> "aiointercept":
         app = web.Application()
@@ -114,46 +196,21 @@ class aiointercept:
         self.server_url = f"http://{self.server_host}:{self.server.port}"
 
         if self._mock_external_urls:
-            # Patch resolve() on BOTH resolver classes at the class level.
-            # This affects every existing and future instance automatically.
-            self._originals_resolver: dict[
-                Type[AbstractResolver],
-                Callable[[Any, str, int, Any], Awaitable[list[ResolveResult]]],
-            ] = {}
-
-            for resolver_cls in (ThreadedResolver, AsyncResolver):
-                # Capture the original class method
-                original_resolve = resolver_cls.resolve
-                self._originals_resolver[resolver_cls] = original_resolve
-
-                # Use a closure to capture the correct 'self' (aiointercept instance)
-                # while receiving 'resolver_self' (the resolver instance).
-                async def mock_resolve(
-                    resolver_self: AbstractResolver,
-                    host: str,
-                    port: int = 0,
-                    family: socket.AddressFamily = socket.AF_INET,
-                ) -> list[ResolveResult]:
-                    return await self._fake_resolve(resolver_self, host, port, family)
-
-                p = patch.object(resolver_cls, "resolve", mock_resolve)
-                p.start()
-                self._patchers.append(p)
-
-            # Patch _get_ssl_context so that https:// requests to mocked hosts
-            # connect to our plain-HTTP TestServer without TLS.
-            original_get_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
-            self._original_ssl_context = original_get_ssl_context
-
-            def mock_get_ssl_context(connector_self: TCPConnector, req: ClientRequest):
-                return self._fake_ssl_context(connector_self, req)
-
-            p_ssl = patch.object(TCPConnector, "_get_ssl_context", mock_get_ssl_context)
-            p_ssl.start()
-            self._patchers.append(p_ssl)
-
-            # Clear the DNS cache on every open connector so cached entries
-            # from before our patch was applied cannot bypass us.
+            global \
+                _patch_refcount, \
+                _real_threaded_resolve, \
+                _real_async_resolve, \
+                _real_ssl_context
+            with _patch_lock:
+                _active_instances.append(self)
+                if _patch_refcount == 0:
+                    _real_threaded_resolve = ThreadedResolver.resolve
+                    _real_async_resolve = AsyncResolver.resolve
+                    _real_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
+                    ThreadedResolver.resolve = _shared_resolve  # type: ignore
+                    AsyncResolver.resolve = _shared_resolve  # type: ignore
+                    TCPConnector._get_ssl_context = _shared_ssl_context  # type: ignore
+                _patch_refcount += 1
             self._clear_all_connector_caches()
 
         return self
@@ -164,15 +221,26 @@ class aiointercept:
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
-        for p in self._patchers:
-            p.stop()
-        self._patchers.clear()
+        if self._mock_external_urls:
+            global \
+                _patch_refcount, \
+                _real_threaded_resolve, \
+                _real_async_resolve, \
+                _real_ssl_context
+            with _patch_lock:
+                _active_instances.remove(self)
+                _patch_refcount -= 1
+                if _patch_refcount == 0:
+                    ThreadedResolver.resolve = _real_threaded_resolve  # type: ignore[method-assign]
+                    AsyncResolver.resolve = _real_async_resolve  # type: ignore[method-assign]
+                    TCPConnector._get_ssl_context = _real_ssl_context  # type: ignore[method-assign,reportPrivateUsage]
+                    _real_threaded_resolve = None
+                    _real_async_resolve = None
+                    _real_ssl_context = None
         if self.server:
             await self.server.close()
             self.server = None
-        self._host_list.clear()
-        self._patterns_list.clear()
-        self.handlers.clear()
+        self.clear()
 
     # Decorator support
     def __call__(
@@ -192,66 +260,8 @@ class aiointercept:
 
         return wrapper
 
-    def _fake_ssl_context(
-        self, connector_self: TCPConnector, req: ClientRequest
-    ) -> SSLContext | None:
-        """Return None (no TLS) for requests destined for our plain-HTTP test server."""
-        host = req.url.raw_host
-        if host in self._host_list or self._match_pattern(str(req.url)):
-            return None
-        # Patterns redirect all DNS to our plain-HTTP server; passthrough HTTPS
-        # requests must still reach us as plain HTTP, so strip TLS here and carry
-        # the original scheme forward so _dispatch can proxy to the right URL.
-        if self._patterns_list and (
-            self.passthrough_unmatched or host in self._passthrough_hosts
-        ):
-            if req.url.scheme == "https":
-                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
-            return None
-        original = self._original_ssl_context
-        return original(connector_self, req)
-
     def _match_pattern(self, url: str) -> bool:
         return any(p.match(url) for p in self._patterns_list)
-
-    async def _fake_resolve(
-        self,
-        resolver_self: AbstractResolver,
-        host: str,
-        port: int = 0,
-        family: socket.AddressFamily = socket.AF_INET,
-    ) -> list[ResolveResult]:
-        """Replacement for resolver.resolve() on both resolver classes."""
-        # if there is pattern, we always match, because we dont have full url
-        if host in self._host_list or self._patterns_list:
-            return [
-                ResolveResult(
-                    hostname=host,
-                    host=self.server_host,
-                    port=self.server_port,
-                    family=family,
-                    proto=0,
-                    flags=0,
-                )
-            ]
-
-        # Not mocked — check if it's a passthrough host or we allow unmatched.
-        if host in self._passthrough_hosts or self.passthrough_unmatched:
-            original = self._originals_resolver[type(resolver_self)]
-            return await original(resolver_self, host, port, family)
-
-        # if no passthrough and no match, we return a redirection to localhost
-        # but will not be any handler registered for it, so it will raise a ClientConnectionError on the other side
-        return [
-            ResolveResult(
-                hostname=host,
-                host=self.server_host,
-                port=self.server_port,
-                family=family,
-                proto=0,
-                flags=0,
-            )
-        ]
 
     @staticmethod
     def _clear_all_connector_caches() -> None:
@@ -268,7 +278,11 @@ class aiointercept:
                 pass
 
     async def _dispatch(self, request: web.Request) -> web.Response:
-        key = (request.method.upper(), normalize_url(request.url))
+        url = normalize_url(request.url)
+        if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
+            url = url.with_scheme("https")
+
+        key = (request.method.upper(), url)
         self.requests.setdefault(key, [])
         request._captured_body = await request.read() if request.can_read_body else b""
         try:
@@ -282,7 +296,8 @@ class aiointercept:
         # this kwargs will be removed, should be deprecated in the future
         request.kwargs = {
             "headers": request.headers,
-            "query": dict(request.query),
+            # Use getall so duplicate keys (?a=1&a=2) aren't collapsed to one value.
+            "query": {k: request.query.getall(k) for k in dict.fromkeys(request.query)},
             "json": json,
         }
         # Read body eagerly before the handler runs, because aiohttp sets
@@ -329,8 +344,8 @@ class aiointercept:
                     "https" if request.secure else "http"
                 )
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
-                _orig_resolve = self._originals_resolver[ThreadedResolver]
-                _orig_ssl_ctx = self._original_ssl_context
+                _orig_resolve = _real_threaded_resolve
+                _orig_ssl_ctx = _real_ssl_context
 
                 class _BypassResolver(ThreadedResolver):
                     async def resolve(
@@ -390,10 +405,14 @@ class aiointercept:
         content_type: str | None = None,
         callback: Callable[[URL | Pattern[str]], CallbackResult] | None = None,
         reason: str | None = None,
-        exception: Exception | None = None,
+        exception: Exception | bool | None = None,
         **kwargs,
     ) -> None:
-        if exception is not None:
+        if exception:
+            if exception is not True:
+                logger.warning(
+                    "aiointercept only raise ClientConnectionError, pass exception=True instead of an specific exception"
+                )
             # if there is an excpetion, dont add handler, will return a clientDisconnectionError
             # add some deprecation or similar
             return
@@ -462,6 +481,8 @@ class aiointercept:
         else:
             if repeat is False:
                 repeat = 1
+            if repeat < 1:
+                raise ValueError("repeat must be at least 1")
             handlers: list[handler_type] = [handler] * repeat
             if isinstance(url, Pattern):
                 if (url, method) in self.patterns_handler:
@@ -517,6 +538,8 @@ class aiointercept:
         self.requests.clear()
         self.handlers.clear()
         self.patterns_handler.clear()
+        self._host_list.clear()
+        self._patterns_list.clear()
 
     def assert_called(self):
         if not self.requests:
