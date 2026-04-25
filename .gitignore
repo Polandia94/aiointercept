@@ -4,3 +4,9 @@
 .coverage
 CLAUDE.md
 plan.md
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+dist/
