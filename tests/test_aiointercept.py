@@ -827,8 +827,12 @@ async def test_mock_https_url():
     """An https:// URL can be registered and mocked; no real TLS is used."""
     async with ClientSession() as session:
         async with aiointercept(mock_external_urls=True) as m:
-            m.get("https://secure.test/data", status=200, body=b"secret")
-            resp = await session.get("https://secure.test/data")
+            m.patch("https://secure.test/data", status=200, body=b"secret")
+            resp = await session.patch("https://secure.test/data")
+            assert resp.status == 200
+            assert await resp.read() == b"secret"
+            m.patch("https://secure.test/data", status=200, body=b"secret")
+            resp = await session.patch("https://secure.test/data")
             assert resp.status == 200
             assert await resp.read() == b"secret"
 

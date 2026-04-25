@@ -181,6 +181,7 @@ class aiointercept:
         self.passthrough_unmatched = passthrough_unmatched
 
         self._host_list: list[str] = []
+        self._https_hosts: set[str] = set()
         self._patterns_list: list[Pattern[str]] = []
 
         # handler are (path, method) → handler or list of handlers (if repeat != True)
@@ -317,7 +318,10 @@ class aiointercept:
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
         url = normalize_url(request.url)
+        req_host = request.headers.get("Host", "")
         if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
+            self._https_hosts.add(req_host)
+        if req_host in self._https_hosts:
             url = url.with_scheme("https")
 
         key = (request.method.upper(), url)
@@ -592,6 +596,7 @@ class aiointercept:
         self.handlers.clear()
         self.patterns_handler.clear()
         self._host_list.clear()
+        self._https_hosts.clear()
         self._patterns_list.clear()
 
     def assert_called(self) -> None:
@@ -687,6 +692,7 @@ class aiointercept:
                 )
         if strict_headers:
             actual_headers = dict(request.headers)
+            actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
             assert expected_headers == actual_headers, (
                 f"Expected headers {expected_headers!r}, got {actual_headers!r}"
