@@ -490,7 +490,7 @@ class aiointercept:
             body = body.encode()
 
         resp_headers = dict(headers or {})
-        if not content_type and body and "Content-Type" not in resp_headers:
+        if not content_type and "Content-Type" not in resp_headers:
             content_type = "application/json"
 
         async def handler(request: web.Request) -> web.Response:
