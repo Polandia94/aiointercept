@@ -7,14 +7,13 @@ import json as json_module
 import inspect
 import warnings
 import gc
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 import logging
 
 import aiohttp
 from aiohttp import ClientRequest, ClientResponse, web, hdrs
 from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
-from aiohttp.formdata import FormData
 from aiohttp.resolver import ThreadedResolver, AsyncResolver
 from aiohttp.test_utils import TestServer
 from aiohttp.web_request import Request
@@ -602,14 +601,9 @@ class aiointercept:
             )
         elif data is not None:
             if isinstance(data, dict):
-                # aiohttp sends data=dict via FormData as application/x-www-form-urlencoded.
-                # Use FormData to produce the exact same encoding aiohttp does.
-                form_encoded = FormData(data)()._value  # type: ignore[attr-defined]
-                # Accept order-insensitive comparison via parse_qs
                 actual_qs = parse_qs(actual_body.decode(errors="replace"))
-                expected_qs = parse_qs(form_encoded.decode())
-                match = actual_body == form_encoded or actual_qs == expected_qs
-                assert match, (
+                expected_qs = parse_qs(urlencode(sorted(data.items())))
+                assert actual_qs == expected_qs, (
                     f"Expected body {data!r} (form encoded), got {actual_body!r}"
                 )
             else:
