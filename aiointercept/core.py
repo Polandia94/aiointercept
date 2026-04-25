@@ -111,7 +111,18 @@ def _shared_ssl_context(
 
 
 class CallbackResult:
-    """Result object return by a callback"""
+    """Result object returned by a callback.
+
+    Args:
+        method: HTTP method (default GET; not used by the server handler).
+        status: HTTP response status code.
+        body: Raw response body as str or bytes.
+        content_type: ``Content-Type`` header value.
+        payload: Response body as a dict; serialized to JSON automatically.
+        headers: Additional response headers.
+        response_class: Ignored (present for aioresponses API compatibility).
+        reason: HTTP reason phrase.
+    """
 
     def __init__(
         self,
@@ -340,8 +351,8 @@ class aiointercept:
 
         else:
             handler = selected_handler
+        original_host = request.headers.get("Host", request.url.host)
         if handler is None:
-            original_host = request.headers.get("Host", request.url.host)
             original_urls = [
                 f"https://{original_host}{request.path_qs}",
                 f"http://{original_host}{request.path_qs}",
@@ -420,6 +431,28 @@ class aiointercept:
         exception: Exception | bool | None = None,
         **kwargs,
     ) -> None:
+        """Register a mock handler for *url* and *method*.
+
+        Args:
+            url: Target URL as str, :class:`~yarl.URL`, or compiled
+                :class:`re.Pattern`.
+            method: HTTP method (case-insensitive, default ``GET``).
+            status: Response status code.
+            body: Raw response body (str is UTF-8 encoded; default empty bytes).
+            json: Response body as a JSON-serialisable object (overrides *body*).
+            payload: Alias for *json*.
+            headers: Additional response headers.
+            repeat: ``True`` to respond indefinitely; integer N to respond N
+                times; ``False`` or ``0`` to respond once (default).
+            content_type: Override the ``Content-Type`` response header.
+            callback: Callable ``(url, *, headers, query, json) → CallbackResult``
+                (sync or async).  Takes precedence over *body* / *json* / *status*.
+            reason: HTTP reason phrase.
+            exception: Any truthy value registers a handler that closes the
+                connection, causing :class:`~aiohttp.ClientConnectionError` on the
+                client.  Passing a specific exception instance logs a warning;
+                pass ``exception=True`` to suppress it.
+        """
         if exception:
             if exception is not True:
                 logger.warning(
@@ -491,7 +524,7 @@ class aiointercept:
             handler_url = str(normalize_url(url))
             self.handlers[handler_url, method] = handler
         else:
-            if repeat is False:
+            if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
@@ -525,45 +558,56 @@ class aiointercept:
             else:
                 self.handlers[handler_url, method] = handlers
 
-    def get(self, url, **kwargs):
+    def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock GET handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_GET, **kwargs)
 
-    def post(self, url, **kwargs):
+    def post(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock POST handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_POST, **kwargs)
 
-    def put(self, url, **kwargs):
+    def put(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock PUT handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_PUT, **kwargs)
 
-    def patch(self, url, **kwargs):
+    def patch(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock PATCH handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_PATCH, **kwargs)
 
-    def delete(self, url, **kwargs):
+    def delete(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock DELETE handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_DELETE, **kwargs)
 
-    def head(self, url, **kwargs):
+    def head(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock HEAD handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_HEAD, **kwargs)
 
-    def options(self, url, **kwargs):
+    def options(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+        """Register a mock OPTIONS handler. See :meth:`add` for all keyword arguments."""
         self.add(url, method=hdrs.METH_OPTIONS, **kwargs)
 
-    def clear(self):
+    def clear(self) -> None:
+        """Clear all recorded requests and registered handlers."""
         self.requests.clear()
         self.handlers.clear()
         self.patterns_handler.clear()
         self._host_list.clear()
         self._patterns_list.clear()
 
-    def assert_called(self):
+    def assert_called(self) -> None:
+        """Assert that at least one request was made."""
         if not self.requests:
             raise AssertionError("Expected at least one call, got none.")
 
-    def assert_not_called(self):
+    def assert_not_called(self) -> None:
+        """Assert that no requests were made."""
         if self.requests:
             raise AssertionError(
                 f"Expected no calls, got {sum(len(v) for v in self.requests.values())}."
             )
 
-    def assert_called_once(self):
+    def assert_called_once(self) -> None:
+        """Assert that exactly one request was made across all URLs."""
         count = sum(len(v) for v in self.requests.values())
         if count != 1:
             raise AssertionError(f"Expected exactly 1 call, got {count}.")
@@ -573,7 +617,8 @@ class aiointercept:
         url: URL | str,
         method: str = hdrs.METH_GET,
         params: dict[str, str] | None = None,
-    ):
+    ) -> None:
+        """Assert that *url* was called at least once with the given *method*."""
         url = normalize_url(merge_params(url, params))
         key = (method.upper(), url)
         if key not in self.requests:
@@ -587,12 +632,30 @@ class aiointercept:
         data: str | bytes | dict[str, Any] | None = None,
         json: Any = None,
         headers: dict[str, str] | None = None,
-    ):
+        strict_headers: bool = False,
+    ) -> None:
+        """Assert that the most recent call to *url* matched the given arguments.
+
+        Args:
+            url: Expected URL (str or :class:`~yarl.URL`).
+            method: Expected HTTP method (default ``GET``).
+            params: Query string params merged into *url* before lookup.
+            data: Expected request body — bytes, str, or a dict (form-encoded via
+                ``application/x-www-form-urlencoded``).
+            json: Expected request body as a JSON-serialisable object.
+            headers: Expected request headers.  By default only the headers listed
+                here are checked; auto-added aiohttp headers are ignored.  Set
+                *strict_headers* to compare the full header map.
+            strict_headers: When ``True``, the complete set of actual request
+                headers must match *headers* exactly.  Use
+                :data:`unittest.mock.ANY` as a value to accept any value for a
+                specific key (e.g. ``Content-Length``).
+        """
         url = normalize_url(merge_params(url, params))
         key = (method.upper(), url)
         if key not in self.requests:
             raise AssertionError(f"No calls to {method.upper()} {url}")
-        request = self.requests[key][0]  # check the first call
+        request = self.requests[key][-1]  # most recent call
         actual_body = getattr(request, "_captured_body", b"")
         if json is not None:
             # aiohttp sends json= as JSON-encoded bytes with application/json
@@ -602,6 +665,13 @@ class aiointercept:
             )
         elif data is not None:
             if isinstance(data, dict):
+                actual_ct = request.headers.get("Content-Type", "")
+                if actual_ct and "application/x-www-form-urlencoded" not in actual_ct:
+                    raise AssertionError(
+                        f"data=dict assertion requires Content-Type: "
+                        f"application/x-www-form-urlencoded, got {actual_ct!r}. "
+                        f"Use json= for JSON bodies."
+                    )
                 actual_qs = parse_qs(actual_body.decode(errors="replace"))
                 expected_qs = parse_qs(urlencode(sorted(data.items())))
                 assert actual_qs == expected_qs, (
@@ -615,25 +685,18 @@ class aiointercept:
                 assert actual_body == expected_body, (
                     f"Expected body {expected_body!r}, got {actual_body!r}"
                 )
-        actual_headers = dict(request.headers)
-        # Strip headers that aiohttp adds automatically, unless the caller
-        # explicitly wants to assert them.
-        for header in (
-            "Content-Length",
-            "Content-Type",
-            "Transfer-Encoding",
-            "Host",
-            "Accept",
-            "Accept-Encoding",
-            "User-Agent",
-        ):
-            if header not in (headers or {}):
-                # this should be deprecated in the future, but for now we want to avoid breaking existing tests that don't specify these headers
-                actual_headers.pop(header, None)
-        expected_headers = headers or {}
-        assert expected_headers == actual_headers, (
-            f"Expected headers {expected_headers!r}, got {actual_headers!r}"
-        )
+        if strict_headers:
+            actual_headers = dict(request.headers)
+            expected_headers = headers or {}
+            assert expected_headers == actual_headers, (
+                f"Expected headers {expected_headers!r}, got {actual_headers!r}"
+            )
+        elif headers:
+            actual_headers = dict(request.headers)
+            for k, v in headers.items():
+                assert actual_headers.get(k) == v, (
+                    f"Header {k!r}: expected {v!r}, got {actual_headers.get(k)!r}"
+                )
 
     def assert_called_once_with(
         self,
@@ -643,6 +706,10 @@ class aiointercept:
         data: str | bytes | dict[str, Any] | None = None,
         json: Any = None,
         headers: dict[str, str] | None = None,
-    ):
+        strict_headers: bool = False,
+    ) -> None:
+        """Assert that exactly one request was made and it matched the given arguments."""
         self.assert_called_once()
-        self.assert_called_with(url, method, params, data, json, headers)
+        self.assert_called_with(
+            url, method, params, data, json, headers, strict_headers
+        )

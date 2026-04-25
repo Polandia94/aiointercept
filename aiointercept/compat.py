@@ -8,10 +8,9 @@ def normalize_url(url: "URL | str") -> URL:
     if url.fragment:
         url = url.with_fragment(None)
     sorted_query = sorted(url.query.items())
-    # Force the path into the string representation so that
-    # "http://host" and "http://host/" produce the same key.
-    if url.host and url.path:
-        url = url.with_path(url.path)
+    # Normalize "http://host" and "http://host/" to the same key.
+    if url.host:
+        url = url.with_path(url.path or "/")
     return url.with_query(sorted_query)
 
 

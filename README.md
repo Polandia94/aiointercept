@@ -68,6 +68,13 @@ async def test_example(mock):
 
 ### pytest fixture
 
+> **Note:** Add `asyncio_mode = "auto"` to your `pytest.ini` / `pyproject.toml` so
+> pytest-asyncio discovers async tests automatically:
+> ```toml
+> [tool.pytest.ini_options]
+> asyncio_mode = "auto"
+> ```
+
 ```python
 import pytest
 import pytest_asyncio
@@ -150,7 +157,7 @@ m.add(
     repeat=False,         # True = respond indefinitely; int = respond N times
     callback=None,        # callable or coroutine receiving (url, **kwargs)
     reason=None,          # HTTP reason phrase
-    exception=None,       # (deprecated) raise an exception — not fully supported
+    exception=None,       # truthy → close the connection (ClientConnectionError); specific exception types are not supported
 )
 ```
 
@@ -280,7 +287,7 @@ async with aiointercept(True) as m:
     request = m.requests[key][0]
     print(request.headers["User-Agent"])
     print(request.kwargs["json"])   # parsed JSON body, if any
-    print(request.kwargs["query"])  # query string as dict
+    print(request.kwargs["query"])  # query string as dict[str, list[str]] — repeated keys preserved
 ```
 
 ## Assertion helpers
@@ -293,8 +300,9 @@ m.assert_called_once()                     # exactly one request was made
 m.assert_any_call(url, method="GET", params=None)
 # passes if the URL was called at least once with the given method
 
-m.assert_called_with(url, method="GET", params=None, data=None, json=None, headers=None)
-# checks the first recorded call to this URL
+m.assert_called_with(url, method="GET", params=None, data=None, json=None, headers=None, strict_headers=False)
+# checks the most recent recorded call to this URL
+# headers: by default only checks the keys you pass; set strict_headers=True to compare the full header map
 
 m.assert_called_once_with(url, ...)
 # equivalent to assert_called_once() + assert_called_with(...)
@@ -317,6 +325,12 @@ async with aiointercept(True, passthrough_unmatched=True) as m:
     m.get("http://mocked.example.com", payload={"mocked": True})
     # any URL without a registered handler is forwarded to the real server
 ```
+
+## How HTTPS interception works
+
+When `mock_external_urls=True`, `aiointercept` patches `TCPConnector._get_ssl_context` to return `None` (no TLS) for intercepted hosts and injects an `X-Aiointercept-Orig-Scheme: https` header so the server-side `_dispatch` can reconstruct the original `https://` URL for handler lookup and request recording.
+
+For passthrough requests under the HTTPS + pattern scenario, a `_BypassConnector` with an unpatched `_get_ssl_context` is used so real TLS is negotiated for the proxied connection.
 
 ## Migrating from aioresponses
 
@@ -355,22 +369,20 @@ asyncio_mode = "auto"
 
 - Bare IP addresses (`http://1.2.3.4/path`) are **not** intercepted.
 
-
-## Known limitations
-
-- URL fragments (`#`) are not forwarded in requests and cannot be matched.
-- Raising arbitrary exceptions via `exception=` is not supported; use `status=5xx` instead.
-- The decorator must wrap an `async` function.
-- DNS-based interception (`mock_external_urls=True`) does not work for requests to bare IP addresses.
-- `aiohttp` may retry on connector errors, so request counts may exceed 1 in failure scenarios.
-- `timeout` passthrough is not supported.
-
 ## Differences from aioresponses
 
 | Feature | aioresponses | aiointercept |
 |---|---|---|
 | Context manager | sync (`with`) | async (`async with`) |
-| Transport | pure mock | real aiohttp server |
+| Transport | pure mock | real `aiohttp.web` server |
 | pytest fixture | sync fixture | `async` fixture (`pytest_asyncio`) |
-| Exception mocking | supported | not supported |
-| Bare IP interception | supported | not supported (`mock_external_urls=True`) |
+| `mock_external_urls` | not required | **required** constructor arg |
+| `assert_called_with` | checks most recent call | checks most recent call |
+| `exception=` | raises the given exception | closes connection → `ClientConnectionError` |
+| `request.kwargs["query"]` | `dict[str, str]` | `dict[str, list[str]]` (repeated keys preserved) |
+| `CallbackResult(response_class=)` | used | silently ignored |
+| Callback `**kwargs` keys | full request kwargs | `headers`, `query`, `json` only |
+| `match_querystring=` param | supported | not implemented |
+| `call_count` / `call_args_list` | available | not implemented |
+| Bare-IP DNS interception | works | not supported |
+| `timeout=` passthrough | supported | not supported |

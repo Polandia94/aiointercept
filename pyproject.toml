@@ -1,7 +1,7 @@
 [project]
 name = "aiointercept"
 version = "0.1.0"
-description = "aiohttp test mocking via a real local server and DNS redirection"
+description = "aiohttp mock library that routes requests through a real test server"
 authors = [
     {name = "Pablo Estevez",email = "pablo22estevez@gmail.com"}
 ]
@@ -10,11 +10,35 @@ readme = "README.md"
 homepage = "https://github.com/Polandia94/aiointercept"
 repository = "https://github.com/Polandia94/aiointercept"
 requires-python = ">=3.10"
+keywords = ["aiohttp", "mock", "testing", "pytest", "asyncio", "aioresponses"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Framework :: aiohttp",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing :: Mocking",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "yarl (>=1.23.0,<2.0.0)",
     "aiohttp (>=3.13.3,<4.0.0)",
+    "multidict (>=6.0,<7.0)",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Polandia94/aiointercept"
+Repository = "https://github.com/Polandia94/aiointercept"
+Issues = "https://github.com/Polandia94/aiointercept/issues"
 
 [tool.uv]
 package = true
@@ -25,6 +49,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aiointercept"]
+artifacts = ["aiointercept/py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

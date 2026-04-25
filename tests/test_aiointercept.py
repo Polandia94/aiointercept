@@ -169,11 +169,14 @@ async def test_repeat_integer(n):
 
 
 async def test_repeat_zero():
-    """repeat=0 should fail"""
-    async with ClientSession() as _:
+    """repeat=0 is treated identically to repeat=False (respond exactly once)."""
+    async with ClientSession() as session:
         async with aiointercept(mock_external_urls=True) as m:
-            with pytest.raises(ValueError):
-                m.get("http://repeat.test/once", status=200, repeat=0)
+            m.get("http://repeat.test/once", status=200, repeat=0)
+            resp = await session.get("http://repeat.test/once")
+            assert resp.status == 200
+            with pytest.raises(ClientConnectionError):
+                await session.get("http://repeat.test/once")
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +361,11 @@ async def test_no_handler_returns_connection_error():
                 await session.get("http://example.com/missing")
 
 
-async def test_exception_parameter_skips_handler():
-    """exception= causes add() to skip adding the handler (returns early)."""
+async def test_exception_parameter_causes_connection_error():
+    """exception= registers a handler that closes the connection, raising ClientConnectionError."""
     async with ClientSession() as session:
         async with aiointercept(mock_external_urls=True) as m:
             m.get("http://example.com/err", exception=Exception("boom"), status=200)
-            # No handler registered → connection error
             with pytest.raises(ClientConnectionError):
                 await session.get("http://example.com/err")
 

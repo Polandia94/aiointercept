@@ -137,6 +137,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "multidict" },
     { name = "yarl" },
 ]
 
@@ -156,6 +157,7 @@ tests = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3,<4.0.0" },
+    { name = "multidict", specifier = ">=6.0,<7.0" },
     { name = "yarl", specifier = ">=1.23.0,<2.0.0" },
 ]
 
