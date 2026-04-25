@@ -119,7 +119,7 @@ class CallbackResult:
         status: int = 200,
         body: str | bytes = "",
         content_type: str = "application/json",
-        payload: dict[str, str] | None = None,
+        payload: Any = None,
         headers: dict[str, str] | None = None,
         response_class: Type[ClientResponse] | None = None,
         reason: str | None = None,
@@ -134,7 +134,7 @@ class CallbackResult:
         self.reason = reason
 
 
-handler_type = Callable[[web.Request], Awaitable[web.Response]]
+handler_type = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 class aiointercept:
@@ -304,7 +304,7 @@ class aiointercept:
             except Exception:
                 pass
 
-    async def _dispatch(self, request: web.Request) -> web.Response:
+    async def _dispatch(self, request: web.Request) -> web.StreamResponse:
         url = normalize_url(request.url)
         if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
             url = url.with_scheme("https")
@@ -410,11 +410,12 @@ class aiointercept:
         status: int = 200,
         body: str | bytes = b"",
         json: Any = None,
-        payload: dict | None = None,
+        payload: Any = None,
         headers: dict | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
-        callback: Callable[[URL | Pattern[str]], CallbackResult] | None = None,
+        callback: Callable[..., CallbackResult | Awaitable[CallbackResult]]
+        | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
         **kwargs,
