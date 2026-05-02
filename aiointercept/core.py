@@ -258,7 +258,11 @@ class aiointercept:
         if self.server:
             await self.server.close()
             self.server = None
-        self.clear()
+        self.handlers.clear()
+        self.patterns_handler.clear()
+        self._host_list.clear()
+        self._https_hosts.clear()
+        self._patterns_list.clear()
 
     # Decorator support
     def __call__(

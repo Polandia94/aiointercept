@@ -38,6 +38,16 @@ async def test_mock_external_urls_false_uses_server_host_port():
         assert await resp.read() == b"direct"
 
 
+async def test_requests_outside_manager():
+    """check requests outside the context manager works"""
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://example.com/hello", status=200, body=b"hi")
+            await session.get("http://example.com/hello")
+
+    m.assert_called_once_with("http://example.com/hello", method="GET")
+
+
 # ---------------------------------------------------------------------------
 # URL type variants: str, URL, Pattern
 # ---------------------------------------------------------------------------
@@ -721,7 +731,7 @@ async def test_clear_connector_cache_exception_swallowed():
 
 
 # ---------------------------------------------------------------------------
-# Decorator on a class method (line 187 branch)
+# Decorator on a class method
 # ---------------------------------------------------------------------------
 
 
@@ -742,7 +752,7 @@ async def test_decorator_on_class_method():
 
 
 # ---------------------------------------------------------------------------
-# Extending an existing list of pattern handlers (lines 444-447)
+# Extending an existing list of pattern handlers
 # ---------------------------------------------------------------------------
 
 
