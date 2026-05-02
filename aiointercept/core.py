@@ -596,7 +596,6 @@ class aiointercept:
         self.handlers.clear()
         self.patterns_handler.clear()
         self._host_list.clear()
-        self._https_hosts.clear()
         self._patterns_list.clear()
 
     def assert_called(self) -> None:
