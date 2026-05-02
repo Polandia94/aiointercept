@@ -18,7 +18,7 @@ from aiohttp.resolver import ThreadedResolver, AsyncResolver
 from aiohttp.test_utils import TestServer
 from aiohttp.web_request import Request
 from yarl import URL
-from typing import Any, Awaitable, Callable, Type
+from typing import Any, Awaitable, Callable, Mapping, Sequence, Type
 from .compat import merge_params, normalize_url
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ class CallbackResult:
         body: str | bytes = "",
         content_type: str = "application/json",
         payload: Any = None,
-        headers: dict[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
         response_class: Type[ClientResponse] | None = None,
         reason: str | None = None,
     ):
@@ -156,7 +156,7 @@ class aiointercept:
     def __init__(
         self,
         mock_external_urls: bool,
-        passthrough: list[str] | None = None,
+        passthrough: Sequence[str] | None = None,
         passthrough_unmatched: bool = False,
         param: str | None = None,
         **kwargs: dict[str, Any],
@@ -426,7 +426,7 @@ class aiointercept:
         body: str | bytes = b"",
         json: Any = None,
         payload: Any = None,
-        headers: dict | None = None,
+        headers: Mapping[str, str] | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
         callback: Callable[..., CallbackResult | Awaitable[CallbackResult]]
@@ -620,7 +620,7 @@ class aiointercept:
         self,
         url: URL | str,
         method: str = hdrs.METH_GET,
-        params: dict[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
     ) -> None:
         """Assert that *url* was called at least once with the given *method*."""
         url = normalize_url(merge_params(url, params))
@@ -632,10 +632,10 @@ class aiointercept:
         self,
         url: URL | str,
         method: str = hdrs.METH_GET,
-        params: dict[str, str] | None = None,
-        data: str | bytes | dict[str, Any] | None = None,
+        params: typing.Mapping[str, str] | None = None,
+        data: str | bytes | typing.Mapping[str, Any] | None = None,
         json: Any = None,
-        headers: dict[str, str] | None = None,
+        headers: typing.Mapping[str, str] | None = None,
         strict_headers: bool = False,
     ) -> None:
         """Assert that the most recent call to *url* matched the given arguments.
@@ -668,7 +668,7 @@ class aiointercept:
                 f"Expected JSON body {json!r}, got {actual_body!r}"
             )
         elif data is not None:
-            if isinstance(data, dict):
+            if not isinstance(data, (str, bytes)):
                 actual_ct = request.headers.get("Content-Type", "")
                 if actual_ct and "application/x-www-form-urlencoded" not in actual_ct:
                     raise AssertionError(
@@ -707,10 +707,10 @@ class aiointercept:
         self,
         url: URL | str,
         method: str = hdrs.METH_GET,
-        params: dict[str, str] | None = None,
-        data: str | bytes | dict[str, Any] | None = None,
+        params: typing.Mapping[str, str] | None = None,
+        data: str | bytes | typing.Mapping[str, Any] | None = None,
         json: Any = None,
-        headers: dict[str, str] | None = None,
+        headers: typing.Mapping[str, str] | None = None,
         strict_headers: bool = False,
     ) -> None:
         """Assert that exactly one request was made and it matched the given arguments."""

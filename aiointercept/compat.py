@@ -1,3 +1,5 @@
+import typing
+
 from multidict import MultiDict
 from yarl import URL
 
@@ -14,7 +16,7 @@ def normalize_url(url: "URL | str") -> URL:
     return url.with_query(sorted_query)
 
 
-def merge_params(url: "URL | str", params: "dict[str, str] | None" = None) -> URL:
+def merge_params(url: URL | str, params: typing.Mapping[str, str] | None = None) -> URL:
     url = URL(url)
     if params:
         query_params = MultiDict(url.query)
