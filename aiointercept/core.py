@@ -641,6 +641,7 @@ class aiointercept:
         json: Any = None,
         headers: typing.Mapping[str, str] | None = None,
         strict_headers: bool = False,
+        **kwargs: Any,
     ) -> None:
         """Assert that the most recent call to *url* matched the given arguments.
 
@@ -658,7 +659,14 @@ class aiointercept:
                 headers must match *headers* exactly.  Use
                 :data:`unittest.mock.ANY` as a value to accept any value for a
                 specific key (e.g. ``Content-Length``).
+            kwargs: Ignored (present for aioresponses API compatibility).
         """
+        if kwargs:
+            warnings.warn(
+                "Passing extra parameters to assert_called_with via kwargs is deprecated and will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         url = normalize_url(merge_params(url, params))
         key = (method.upper(), url)
         if key not in self.requests:
@@ -716,9 +724,10 @@ class aiointercept:
         json: Any = None,
         headers: typing.Mapping[str, str] | None = None,
         strict_headers: bool = False,
+        **kwargs: Any,
     ) -> None:
         """Assert that exactly one request was made and it matched the given arguments."""
         self.assert_called_once()
         self.assert_called_with(
-            url, method, params, data, json, headers, strict_headers
+            url, method, params, data, json, headers, strict_headers, **kwargs
         )
