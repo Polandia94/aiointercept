@@ -61,4 +61,4 @@ jobs:
         run: uv pip install aiohttp==${{ matrix.aiohttp-version }}
 
       - name: Tests
-        run: uv run pytest tests/ --cov=aiointercept --cov-fail-under=99
+        run: uv run pytest tests/ --cov --cov-fail-under=99
