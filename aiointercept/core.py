@@ -16,10 +16,33 @@ from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.resolver import ThreadedResolver, AsyncResolver
 from aiohttp.test_utils import TestServer
-from aiohttp.web_request import Request
 from yarl import URL
-from typing import Any, Awaitable, Callable, Mapping, Sequence, Type
+from typing import Any, Awaitable, Callable, Mapping, Sequence, Type, TypedDict, cast
 from .compat import merge_params, normalize_url
+
+
+class AiointerceptRequstKwargs(TypedDict):
+    headers: Mapping[str, str]
+    query: Mapping[str, Sequence[str]]
+    json: Any | None
+
+
+class AiointercepRequest(web.Request):
+    _captured_body: bytes
+    kwargs: AiointerceptRequstKwargs
+
+    @classmethod
+    def upgrade(
+        cls,
+        request: web.Request,
+        captured_body: bytes,
+        kwargs: "AiointerceptRequstKwargs",
+    ) -> "AiointercepRequest":
+        request.__class__ = cls
+        request._captured_body = captured_body  # type: ignore[attr-defined]
+        request.kwargs = kwargs  # type: ignore[attr-defined]
+        return cast("AiointercepRequest", request)
+
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +182,7 @@ class aiointercept:
         passthrough: Sequence[str] | None = None,
         passthrough_unmatched: bool = False,
         param: str | None = None,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ) -> None:
         if kwargs:
             warnings.warn(
@@ -192,7 +215,7 @@ class aiointercept:
         ] = {}
 
         # recorded requests: {(METHOD, URL): [web.Request, ...]}
-        self.requests: dict[tuple[str, URL], list[Request]] = {}
+        self.requests: dict[tuple[str, URL], list[AiointercepRequest]] = {}
 
         self.server: TestServer | None = None
         self._bypass_session: aiohttp.ClientSession | None = None
@@ -313,7 +336,7 @@ class aiointercept:
         its DNS cache.  This ensures pre-patch resolutions are not reused.
         """
         for obj in gc.get_objects():
-            if not issubclass(type(obj), aiohttp.TCPConnector):
+            if not isinstance(obj, aiohttp.TCPConnector):
                 continue
             try:
                 obj.clear_dns_cache()
@@ -330,25 +353,25 @@ class aiointercept:
 
         key = (request.method.upper(), url)
         self.requests.setdefault(key, [])
-        request._captured_body = await request.read() if request.can_read_body else b""
+        captured_body = await request.read() if request.can_read_body else b""
         try:
-            json = (
-                json_module.loads(request._captured_body)  # type: ignore[attr-defined]
-                if request._captured_body  # type: ignore[attr-defined]
-                else None
-            )
+            json = json_module.loads(captured_body) if captured_body else None
         except Exception:
             json = None
         # this kwargs will be removed, should be deprecated in the future
-        request.kwargs = {
+        request_kwargs: AiointerceptRequstKwargs = {
             "headers": request.headers,
             # Use getall so duplicate keys (?a=1&a=2) aren't collapsed to one value.
             "query": {k: request.query.getall(k) for k in dict.fromkeys(request.query)},
             "json": json,
         }
+
+        aiointercept_request = AiointercepRequest.upgrade(
+            request, captured_body, request_kwargs
+        )
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(request)
+        self.requests[key].append(aiointercept_request)
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, request.method))
         if isinstance(selected_handler, list):
@@ -391,7 +414,8 @@ class aiointercept:
                     "https" if request.secure else "http"
                 )
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
-                session = self._bypass_session or self._make_bypass_session()
+                session = self._bypass_session
+                assert session is not None, "Bypass session not initialized"
                 async with session.request(
                     method=request.method,
                     url=real_url,
@@ -437,7 +461,6 @@ class aiointercept:
         | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
-        **kwargs,
     ) -> None:
         """Register a mock handler for *url* and *method*.
 
@@ -500,9 +523,11 @@ class aiointercept:
         async def handler(request: web.Request) -> web.Response:
             if callable(callback):
                 if inspect.iscoroutinefunction(callback):
-                    result = await callback(url, **request.kwargs)  # type: ignore[attr-defined]
+                    result = await callback(
+                        url, **cast(AiointercepRequest, request).kwargs
+                    )
                 else:
-                    result = callback(url, **request.kwargs)  # type: ignore[attr-defined]
+                    result = callback(url, **cast(AiointercepRequest, request).kwargs)
                 _status = result.status
                 _body = result.body
                 _headers = result.headers or {}
@@ -671,13 +696,20 @@ class aiointercept:
         key = (method.upper(), url)
         if key not in self.requests:
             raise AssertionError(f"No calls to {method.upper()} {url}")
-        request = self.requests[key][-1]  # most recent call
-        actual_body = getattr(request, "_captured_body", b"")
+        request = cast(AiointercepRequest, self.requests[key][-1])
+        actual_body = request._captured_body
         if json is not None:
             # aiohttp sends json= as JSON-encoded bytes with application/json
-            expected_body = json_module.dumps(json).encode()
-            assert actual_body == expected_body, (
-                f"Expected JSON body {json!r}, got {actual_body!r}"
+            actual_body_str = actual_body.decode(errors="replace")
+            try:
+                actual_json = json_module.loads(actual_body_str)  # type: ignore[attr-defined]
+            except Exception:
+                raise AssertionError(
+                    f"Expected JSON body {json!r}, got non-JSON body {actual_body!r}"
+                )
+            assert actual_json == json, (
+                f"Expected JSON body {json!r}, got {actual_json!r} "
+                f"(raw body {actual_body!r})"
             )
         elif data is not None:
             if not isinstance(data, (str, bytes)):
@@ -702,17 +734,17 @@ class aiointercept:
                     f"Expected body {expected_body!r}, got {actual_body!r}"
                 )
         if strict_headers:
-            actual_headers = dict(request.headers)
+            actual_headers = request.headers.copy()
             actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
             assert expected_headers == actual_headers, (
                 f"Expected headers {expected_headers!r}, got {actual_headers!r}"
             )
         elif headers:
-            actual_headers = dict(request.headers)
+            actual_headers_proxy = request.headers
             for k, v in headers.items():
-                assert actual_headers.get(k) == v, (
-                    f"Header {k!r}: expected {v!r}, got {actual_headers.get(k)!r}"
+                assert actual_headers_proxy.get(k) == v, (
+                    f"Header {k!r}: expected {v!r}, got {actual_headers_proxy.get(k)!r}"
                 )
 
     def assert_called_once_with(

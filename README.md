@@ -1,31 +1,17 @@
 # aiointercept
 
-A test mocking library for `aiohttp` that intercepts HTTP requests by redirecting DNS to a real local `aiohttp.web` server. Inspired by [aioresponses](https://github.com/pnuckowski/aioresponses), with an `aioresponses`-compatible API.
+A test mocking library for `aiohttp` that intercepts HTTP requests by redirecting DNS to a real local `aiohttp.web` server. Inspired by [aioresponses](https://github.com/pnuckowski/aioresponses), with a compatible API.
 
-Unlike `aioresponses`, which patches `aiohttp` internals to short-circuit requests, `aiointercept` routes requests through a real HTTP server. This catches serialization issues, header handling, and other edge cases that pure mocking can miss.
+Unlike `aioresponses`, which patches `aiohttp` internals to short-circuit requests, `aiointercept` routes requests through a real HTTP server — catching serialization issues, header handling, and other edge cases that pure mocking can miss.
 
 ## Installation
 
-> **Note:** `aiointercept` has not yet been published to PyPI. Until v0.1.0 is released, install directly from the repository:
->
-> ```bash
-> pip install git+https://github.com/Polandia94/aiointercept.git
-> uv add git+https://github.com/Polandia94/aiointercept.git
-> ```
->
-> Once published on PyPI:
-
 ```bash
 pip install aiointercept
-uv add aiointercept
-poetry add aiointercept
+# or: uv add aiointercept / poetry add aiointercept
 ```
 
-## Requirements
-
-- Python ≥ 3.10
-- aiohttp ≥ 3.13
-- pytest-asyncio (for pytest usage)
+**Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13
 
 ## Usage
 
@@ -41,13 +27,12 @@ async def test_example():
             m.get("http://example.com/api", payload={"hello": "world"})
             resp = await session.get("http://example.com/api")
             assert resp.status == 200
-            data = await resp.json()
-            assert data == {"hello": "world"}
+            assert await resp.json() == {"hello": "world"}
 ```
 
 ### Decorator
 
-When used as a decorator, the `aiointercept` instance is passed as the last positional argument (or as the keyword argument named by `param`):
+The `aiointercept` instance is passed as the last positional argument (or the kwarg named by `param`):
 
 ```python
 from aiointercept import aiointercept
@@ -55,28 +40,19 @@ from aiointercept import aiointercept
 @aiointercept(mock_external_urls=True)
 async def test_example(m):
     m.get("http://example.com/api", payload={"hello": "world"})
-    async with aiohttp.ClientSession() as session:
-        resp = await session.get("http://example.com/api")
-        assert resp.status == 200
+    ...
 
-# Named parameter
 @aiointercept(mock_external_urls=True, param="mock")
-async def test_example(mock):
+async def test_named(mock):
     mock.get("http://example.com/api", status=204)
     ...
 ```
 
 ### pytest fixture
 
-> **Note:** Add `asyncio_mode = "auto"` to your `pytest.ini` / `pyproject.toml` so
-> pytest-asyncio discovers async tests automatically:
-> ```toml
-> [tool.pytest.ini_options]
-> asyncio_mode = "auto"
-> ```
+Add `asyncio_mode = "auto"` to your `pyproject.toml` and use an async fixture:
 
 ```python
-import pytest
 import pytest_asyncio
 from aiointercept import aiointercept
 
@@ -87,77 +63,64 @@ async def mock_http():
 
 async def test_something(mock_http):
     mock_http.get("http://example.com/api", payload={"ok": True})
-    async with aiohttp.ClientSession() as session:
-        resp = await session.get("http://example.com/api")
-        assert (await resp.json()) == {"ok": True}
+    ...
 ```
 
 ## Constructor parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `mock_external_urls` | `bool` | required | Controls how URLs are intercepted. See [Interception modes](#interception-modes) below. |
-| `passthrough` | `list[str]` | `None` | List of URLs whose hosts should bypass the mock and hit the real network. Only applies when `mock_external_urls=True`. |
-| `passthrough_unmatched` | `bool` | `False` | When `True`, requests with no registered handler are forwarded to the real server instead of raising a connection error. Only applies when `mock_external_urls=True`. |
-| `param` | `str` | `None` | When used as a decorator, inject the mock as this keyword argument name. |
+| `mock_external_urls` | `bool` | required | See [Interception modes](#interception-modes). |
+| `passthrough` | `list[str]` | `None` | Hosts that bypass the mock and hit the real network. Only with `mock_external_urls=True`. |
+| `passthrough_unmatched` | `bool` | `False` | Forward unmatched requests to the real server instead of raising. Only with `mock_external_urls=True`. |
+| `param` | `str` | `None` | Inject the mock under this kwarg name when used as a decorator. |
 
 ## Interception modes
 
-`mock_external_urls` controls how `aiointercept` intercepts requests.
-
 ### `mock_external_urls=False` (recommended)
 
-The mock server starts on `localhost`, but DNS is **not** patched. Instead, you point your application's HTTP client at the mock server directly by overriding its base URL in tests:
+The server starts on `localhost` but DNS is not patched. Point your client at `m.server_url` directly:
 
 ```python
 async with aiointercept(mock_external_urls=False) as m:
-    # m.server_url is the base URL of the local test server, e.g. "http://127.0.0.1:PORT"
     m.get("/api/users", payload=[{"id": 1}])
-
-    # Pass the server URL to your app/client instead of the real base URL
     async with aiohttp.ClientSession(base_url=m.server_url) as session:
         resp = await session.get("/api/users")
-        assert resp.status == 200
 ```
 
-This is the preferred approach when you can configure the base URL of your HTTP client (e.g. via a fixture, environment variable, or dependency injection). It is simpler, faster, and does not touch global process state.
+Preferred when you can configure the client's base URL — simpler, faster, no global state changes.
 
 ### `mock_external_urls=True`
 
-Patches the DNS resolver at the process level so that every `aiohttp` request is redirected to the mock server, regardless of the hostname in the URL. Use this when you cannot easily change the base URL of the code under test — for example, when the URL is hardcoded deep inside a third-party library.
+Patches the DNS resolver at the process level so every `aiohttp` request is redirected to the mock server. Use this when you cannot change the URL of the code under test (e.g. a hardcoded URL inside a third-party library).
 
 ```python
 async with aiointercept(mock_external_urls=True) as m:
     m.get("https://api.example.com/users", payload=[{"id": 1}])
-
-    # No change needed in the application code — DNS is redirected globally
     async with aiohttp.ClientSession() as session:
         resp = await session.get("https://api.example.com/users")
-        assert resp.status == 200
 ```
 
-> **Note:** DNS patching is global for the duration of the `async with` block, and does **not** work for requests to bare IP addresses (e.g. `http://1.2.3.4/path`). Prefer `mock_external_urls=False` unless you have no other option.
+> DNS patching is global for the duration of the block and does **not** work for bare IP addresses.
 
 ## Registering mock responses
 
 ### `add(url, method, ...)`
 
-The core method for registering a handler.
-
 ```python
 m.add(
     url,                  # str, yarl.URL, or compiled re.Pattern
-    method="GET",         # HTTP method (case-insensitive)
-    status=200,           # response status code
-    body=b"",             # raw response body (str or bytes)
+    method="GET",
+    status=200,
+    body=b"",             # raw response body
     json=None,            # response body as JSON (serialized automatically)
     payload=None,         # alias for json
-    headers=None,         # dict of response headers
-    content_type=None,    # Content-Type header value
-    repeat=False,         # True = respond indefinitely; int = respond N times
-    callback=None,        # callable or coroutine receiving (url, **kwargs)
-    reason=None,          # HTTP reason phrase
-    exception=None,       # truthy → close the connection (ClientConnectionError); specific exception types are not supported
+    headers=None,
+    content_type=None,
+    repeat=False,         # True = indefinitely; int = N times
+    callback=None,        # callable or coroutine: (url, **kwargs) → CallbackResult
+    reason=None,
+    exception=None,       # truthy → close connection (ClientConnectionError)
 )
 ```
 
@@ -173,36 +136,26 @@ m.head(url, **kwargs)
 m.options(url, **kwargs)
 ```
 
-All shortcuts accept the same keyword arguments as `add()` (except `method`).
-
 ### Regex patterns
-
-Use a compiled `re.Pattern` to match multiple URLs:
 
 ```python
 import re
 m.get(re.compile(r"^https://api\.example\.com/.*$"), payload={"ok": True})
 ```
 
-### Repeat
+### Repeat and queuing
 
 ```python
 m.get(url, repeat=True)   # responds indefinitely
-m.get(url, repeat=3)      # responds to the next 3 calls, then raises ClientConnectionError
-```
+m.get(url, repeat=3)      # responds 3 times, then raises ClientConnectionError
 
-Multiple `add()` calls for the same URL queue up responses in order:
-
-```python
+# Multiple add() calls queue responses in order:
 m.get(url, status=200)
 m.get(url, status=201)
-m.get(url, status=202)
-# First call → 200, second → 201, third → 202, fourth → ClientConnectionError
+# First call → 200, second → 201, third → ClientConnectionError
 ```
 
 ### Callbacks
-
-A callback receives the registered URL and the request's `headers`, `query`, and `json` as keyword arguments, and must return a `CallbackResult`:
 
 ```python
 from aiointercept import CallbackResult
@@ -212,9 +165,7 @@ def my_callback(url, headers, query, json):
 
 m.post("http://example.com/echo", callback=my_callback)
 
-# Async callbacks are also supported:
 async def async_callback(url, **kwargs):
-    await asyncio.sleep(0)
     return CallbackResult(body=b"async response")
 
 m.get("http://example.com/async", callback=async_callback)
@@ -226,163 +177,92 @@ m.get("http://example.com/async", callback=async_callback)
 |---|---|---|---|
 | `status` | `int` | `200` | HTTP response status code |
 | `body` | `str \| bytes` | `""` | Raw response body |
-| `payload` | `Any` | `None` | Response body as JSON (serialized automatically; accepts dict, list, scalar) |
+| `payload` | `Any` | `None` | Response body as JSON |
 | `headers` | `dict[str, str] \| None` | `None` | Extra response headers |
-| `content_type` | `str` | `"application/json"` | Content-Type header value |
+| `content_type` | `str` | `"application/json"` | Content-Type header |
 | `reason` | `str \| None` | `None` | HTTP reason phrase |
 
 ## Instance attributes
 
 ### `m.server_url`
 
-The base URL of the local test server, e.g. `"http://127.0.0.1:8765"`. Available inside the `async with` block. Use this with `mock_external_urls=False` to point your client at the mock server:
-
-```python
-async with aiointercept(mock_external_urls=False) as m:
-    base = m.server_url   # e.g. "http://127.0.0.1:54321"
-```
+Base URL of the local test server, e.g. `"http://127.0.0.1:54321"`. Use with `mock_external_urls=False`.
 
 ### `m.requests`
 
-A dict mapping `(METHOD: str, URL: yarl.URL)` to a list of intercepted `aiohttp.web.Request` objects:
+Dict mapping `(METHOD: str, URL: yarl.URL)` to a list of intercepted `AiointercepRequest` that inherits from `aiohttp.web.Request` objects:
 
 ```python
 from yarl import URL
 
 key = ("GET", URL("http://example.com/api"))
-requests = m.requests[key]      # list of web.Request objects, one per call
-first = requests[0]
-
-first.headers["User-Agent"]     # request headers
-first.kwargs["json"]            # parsed JSON body (dict), if Content-Type was application/json
-first.kwargs["query"]           # query string as dict[str, str]
-first.kwargs["headers"]         # raw request headers dict
+req = m.requests[key][0]
+req.headers["User-Agent"]
+req.kwargs["json"]    # parsed JSON body
+req.kwargs["query"]   # query string as dict[str, list[str]]
+req.kwargs["headers"] # raw request headers
 ```
 
-The URL key is normalized (fragment stripped, query parameters sorted) so `http://example.com/?b=2&a=1` and `http://example.com/?a=1&b=2` map to the same key.
+URLs are normalized (fragment stripped, query params sorted).
 
 ### `m.clear()`
 
-Resets all registered handlers and recorded requests. Useful when reusing a mock instance across multiple test cases:
-
-```python
-m.get("http://example.com/a", status=200)
-# ... run test ...
-m.clear()
-m.get("http://example.com/a", status=404)
-# ... run next test ...
-```
-
-## Accessing recorded requests
-
-All intercepted requests are stored in `m.requests`, keyed by `(METHOD, URL)`:
-
-```python
-async with aiointercept(True) as m:
-    m.get("http://example.com/api")
-    await session.get("http://example.com/api")
-
-    from yarl import URL
-    key = ("GET", URL("http://example.com/api"))
-    request = m.requests[key][0]
-    print(request.headers["User-Agent"])
-    print(request.kwargs["json"])   # parsed JSON body, if any
-    print(request.kwargs["query"])  # query string as dict[str, list[str]] — repeated keys preserved
-```
+Resets all registered handlers and recorded requests.
 
 ## Assertion helpers
 
 ```python
-m.assert_called()                          # at least one request was made
-m.assert_not_called()                      # no requests were made
-m.assert_called_once()                     # exactly one request was made
+m.assert_called()
+m.assert_not_called()
+m.assert_called_once()
 
 m.assert_any_call(url, method="GET", params=None)
-# passes if the URL was called at least once with the given method
-
 m.assert_called_with(url, method="GET", params=None, data=None, json=None, headers=None, strict_headers=False)
-# checks the most recent recorded call to this URL
-# headers: by default only checks the keys you pass; set strict_headers=True to compare the full header map
-
 m.assert_called_once_with(url, ...)
-# equivalent to assert_called_once() + assert_called_with(...)
 ```
+
+`assert_called_with` checks the most recent call to the URL. Pass `strict_headers=True` to compare the full header map instead of just the keys you provide.
 
 ## Passthrough
 
-### Allow specific hosts
-
 ```python
+# Specific hosts bypass the mock:
 async with aiointercept(True, passthrough=["https://real-api.example.com"]) as m:
-    m.get("http://mocked.example.com", payload={"mocked": True})
-    # requests to real-api.example.com go through; everything else is mocked
-```
+    ...
 
-### Allow all unmatched requests
-
-```python
+# All unmatched requests go to the real server:
 async with aiointercept(True, passthrough_unmatched=True) as m:
-    m.get("http://mocked.example.com", payload={"mocked": True})
-    # any URL without a registered handler is forwarded to the real server
+    ...
 ```
-
-## How HTTPS interception works
-
-When `mock_external_urls=True`, `aiointercept` patches `TCPConnector._get_ssl_context` to return `None` (no TLS) for intercepted hosts and injects an `X-Aiointercept-Orig-Scheme: https` header so the server-side `_dispatch` can reconstruct the original `https://` URL for handler lookup and request recording.
-
-For passthrough requests under the HTTPS + pattern scenario, a `_BypassConnector` with an unpatched `_get_ssl_context` is used so real TLS is negotiated for the proxied connection.
 
 ## Migrating from aioresponses
 
-`aiointercept` is designed to be a drop-in replacement for `aioresponses` in most cases. The main differences:
-
-### Async context manager
-
-`aioresponses` uses a sync context manager; `aiointercept` requires `async with`:
-
-```python
-# aioresponses
-with aioresponses() as m:
-    ...
-
-# aiointercept
-async with aiointercept(mock_external_urls=True) as m:
-    ...
-```
-
-### pytest-asyncio required
-
-Because the context manager is async, your tests must be `async def` and run under an async test runner. With pytest, add `pytest-asyncio` and set `asyncio_mode = "auto"` in `pyproject.toml`:
-
-```toml
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-```
-
-### `exception=` is not supported
-
-`aioresponses` lets you raise arbitrary exceptions. `aiointercept` only surfaces `ClientConnectionError` (via `exception=True`).
-
-### DNS-patch caveat
-
-`mock_external_urls=True` patches `ThreadedResolver` / `AsyncResolver` at the class level for the duration of the block. This means:
-
-- Bare IP addresses (`http://1.2.3.4/path`) are **not** intercepted.
-
-## Differences from aioresponses
+`aiointercept` is a near drop-in replacement. Key differences:
 
 | Feature | aioresponses | aiointercept |
 |---|---|---|
 | Context manager | sync (`with`) | async (`async with`) |
 | Transport | pure mock | real `aiohttp.web` server |
-| pytest fixture | sync fixture | `async` fixture (`pytest_asyncio`) |
-| `mock_external_urls` | not required | **required** constructor arg |
-| `assert_called_with` | checks most recent call | checks most recent call |
-| `exception=` | raises the given exception | closes connection → `ClientConnectionError` |
-| `request.kwargs["query"]` | `dict[str, str]` | `dict[str, list[str]]` (repeated keys preserved) |
-| `CallbackResult(response_class=)` | used | silently ignored |
-| Callback `**kwargs` keys | full request kwargs | `headers`, `query`, `json` only |
-| `match_querystring=` param | supported | not implemented |
+| pytest fixture | sync | `async` (`pytest_asyncio`) |
+| `mock_external_urls` | always mock | **required** constructor arg |
+| `exception=` | raises given exception | `ClientConnectionError` only |
+| `CallbackResult(response_class=)` | used | silently ignored, not needed |
+| request `**kwargs` keys | full request kwargs | `headers`, `query`, `json` only |
 | `call_count` / `call_args_list` | available | not implemented |
 | Bare-IP DNS interception | works | not supported |
 | `timeout=` passthrough | supported | not supported |
+
+`assert_called_with` / `assert_called_once_with` silently ignore client-only kwargs like `ssl=` and `timeout=` (they are not observable on the wire) and emit a `DeprecationWarning`. Remove those arguments when migrating.
+
+### Compatibility policy
+
+The goal is to keep `aiointercept` as a near drop-in replacement for `aioresponses`. If you find an incompatibility not listed in the table above, please open an issue — it will be documented, and if there is a reasonable way to resolve it, it will be attempted.
+
+### Roadmap
+
+- **More assertion helpers** — `call_count`, `call_args_list`, and compare with only some attributes.
+- **Richer `mock_external_urls=False` mode** — additional convenience and introspection for tests that point the client directly at `m.server_url`, without any DNS patching.
+
+## Attribution
+
+Built on ideas and API conventions from [aioresponses](https://github.com/pnuckowski/aioresponses) by Pawel Nuckowski (MIT License). [tests/test_aioresponse.py](tests/test_aioresponse.py) is a lightly adapted port of the original test suite used to verify compatibility.

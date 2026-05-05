@@ -985,3 +985,169 @@ async def test_concurrent_requests_no_race():
             )
             for resp in responses:
                 assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# strict_headers=True in assert_called_with
+# ---------------------------------------------------------------------------
+
+
+async def test_assert_called_with_strict_headers_pass():
+    """strict_headers=True passes when the full header map matches exactly."""
+    url = "http://example.com/strict"
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get(url, status=200)
+            await session.get(url, headers={"X-Token": "abc"})
+            actual = dict(m.requests[("GET", URL(url))][-1].headers)
+            actual.pop("x-aiointercept-orig-scheme", None)
+            m.assert_called_with(url, headers=actual, strict_headers=True)
+
+
+async def test_assert_called_with_strict_headers_fail():
+    """strict_headers=True raises AssertionError when the header map does not match."""
+    url = "http://example.com/strictfail"
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get(url, status=200)
+            await session.get(url, headers={"X-Token": "abc"})
+            with pytest.raises(AssertionError):
+                m.assert_called_with(
+                    url, headers={"X-Token": "wrong"}, strict_headers=True
+                )
+
+
+# ---------------------------------------------------------------------------
+# assert_called_with extra kwargs deprecation warning
+# ---------------------------------------------------------------------------
+
+
+async def test_assert_called_with_extra_kwargs_deprecation():
+    """Passing unknown kwargs to assert_called_with emits a DeprecationWarning."""
+    url = "http://example.com/acw-kwargs"
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get(url, status=200)
+            await session.get(url)
+            with pytest.warns(DeprecationWarning):
+                m.assert_called_with(url, unknown_arg="ignored")
+
+
+# ---------------------------------------------------------------------------
+# data=dict with wrong Content-Type raises AssertionError
+# ---------------------------------------------------------------------------
+
+
+async def test_assert_called_with_data_dict_wrong_content_type():
+    """assert_called_with(data=dict) raises when body was sent as JSON, not form-encoded."""
+    url = "http://example.com/wrongct"
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.post(url, status=200)
+            await session.post(url, json={"field": "value"})
+            with pytest.raises(
+                AssertionError, match="application/x-www-form-urlencoded"
+            ):
+                m.assert_called_with(url, method="POST", data={"field": "value"})
+
+
+# ---------------------------------------------------------------------------
+# repeat < 0 raises ValueError
+# ---------------------------------------------------------------------------
+
+
+async def test_add_negative_repeat_raises():
+    """A negative integer repeat value raises ValueError immediately."""
+    async with aiointercept(mock_external_urls=True) as m:
+        with pytest.raises(ValueError):
+            m.get("http://example.com/negrepeat", status=200, repeat=-1)
+
+
+# ---------------------------------------------------------------------------
+# content_type= explicit override
+# ---------------------------------------------------------------------------
+
+
+async def test_add_explicit_content_type():
+    """content_type= overrides the default application/json Content-Type header."""
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://ct.test/", body=b"hello", content_type="text/plain")
+            resp = await session.get("http://ct.test/")
+            assert resp.content_type == "text/plain"
+
+
+# ---------------------------------------------------------------------------
+# reason= roundtrip
+# ---------------------------------------------------------------------------
+
+
+async def test_add_reason_phrase():
+    """reason= is forwarded to the HTTP response reason phrase."""
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://reason.test/", status=200, reason="All Good")
+            resp = await session.get("http://reason.test/")
+            assert resp.reason == "All Good"
+
+
+async def test_callback_result_reason():
+    """CallbackResult.reason is forwarded to the HTTP response reason phrase."""
+
+    def cb(url, **kwargs):
+        return CallbackResult(status=200, reason="Callback Fine")
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://reason.test/cb", callback=cb)
+            resp = await session.get("http://reason.test/cb")
+            assert resp.reason == "Callback Fine"
+
+
+# ---------------------------------------------------------------------------
+# CallbackResult.headers non-None
+# ---------------------------------------------------------------------------
+
+
+async def test_callback_result_headers():
+    """Non-None CallbackResult.headers are included in the response."""
+
+    def cb(url, **kwargs):
+        return CallbackResult(status=200, headers={"X-From-Callback": "yes"})
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get("http://cbheaders.test/", callback=cb)
+            resp = await session.get("http://cbheaders.test/")
+            assert resp.headers.get("X-From-Callback") == "yes"
+
+
+# ---------------------------------------------------------------------------
+# exception=True (no log warning) vs exception=SomeInstance (with log warning)
+# ---------------------------------------------------------------------------
+
+
+async def test_exception_true_no_log_warning(caplog):
+    """exception=True closes the connection without emitting a logger.warning."""
+    import logging
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            with caplog.at_level(logging.WARNING, logger="aiointercept.core"):
+                m.get("http://example.com/exc-true", exception=True)
+            assert not caplog.records
+            with pytest.raises(ClientConnectionError):
+                await session.get("http://example.com/exc-true")
+
+
+async def test_exception_instance_logs_warning(caplog):
+    """Passing an exception instance to exception= emits a logger.warning."""
+    import logging
+
+    async with ClientSession() as session:
+        async with aiointercept(mock_external_urls=True) as m:
+            with caplog.at_level(logging.WARNING, logger="aiointercept.core"):
+                m.get("http://example.com/exc-inst", exception=ValueError("boom"))
+            assert caplog.records
+            with pytest.raises(ClientConnectionError):
+                await session.get("http://example.com/exc-inst")
