@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [unreleased]
+
+### Fixed
+
+- `clear()` followed by re-registering an HTTPS handler no longer breaks requests that reuse an existing keep-alive connection. `add()` now records the host in `_https_hosts` eagerly when the registered URL is `https://`, so the dispatcher keeps the correct scheme even when aiohttp skips the SSL hook on reused connections.
+
 ## [0.1.3] - 2026-05-17
 
 ### Fixed

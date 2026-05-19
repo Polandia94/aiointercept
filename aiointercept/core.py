@@ -563,6 +563,12 @@ class aiointercept:  # noqa: N801
 
             # Map this host → our test server
             self._host_list.add(host)
+            # Record HTTPS-ness eagerly so it survives clear() + re-add. The
+            # SSL-context hook also populates _https_hosts, but only on fresh
+            # TCP connections; keep-alive connections that outlive a clear()
+            # would otherwise lose their scheme tagging.
+            if url.scheme == "https":
+                self._https_hosts.add(host)
 
         if json is not None:
             body = json_module.dumps(json).encode()
