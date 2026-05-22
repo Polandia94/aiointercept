@@ -1118,6 +1118,44 @@ async def test_clear_resets_https_hosts():
             assert resp.status == 404
 
 
+async def test_add_https_url_populates_https_hosts():
+    """Registering an HTTPS URL eagerly tags the host as HTTPS, even before any
+    request triggers the SSL hook. This is what lets keep-alive connections
+    survive a clear() + re-add cycle."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("https://secure.test/data", status=200, body=b"ok")
+        assert "secure.test" in m._https_hosts
+
+        m.clear()
+        assert "secure.test" not in m._https_hosts
+
+        m.get("https://secure.test/data", status=200, body=b"ok")
+        assert "secure.test" in m._https_hosts
+
+
+async def test_clear_then_readd_https_works_over_keepalive():
+    """Regression: after clear() and re-registering an HTTPS handler, a request
+    that reuses the existing keep-alive connection used to fail with
+    ServerDisconnectedError. aiohttp only invokes the SSL-context hook on fresh
+    TCP connections, so keep-alive reuses skipped the
+    X-Aiointercept-Orig-Scheme header injection that populated _https_hosts —
+    and clear() had wiped the cached entry. Now add() repopulates it eagerly
+    from the registered URL's scheme."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.post("https://secure.test/graphql", payload={"data": "first"}, repeat=True)
+        async with ClientSession() as session:
+            resp = await session.post("https://secure.test/graphql", json={"q": 1})
+            assert await resp.json() == {"data": "first"}
+
+            m.clear()
+            m.post("https://secure.test/graphql", payload={"data": "second"})
+
+            # Same session → reuses the keep-alive connection; the SSL hook does
+            # not fire again. Without the fix this raises ServerDisconnectedError.
+            resp = await session.post("https://secure.test/graphql", json={"q": 2})
+            assert await resp.json() == {"data": "second"}
+
+
 # ---------------------------------------------------------------------------
 # passthrough_unmatched works with URL handlers (no patterns)
 # ---------------------------------------------------------------------------
