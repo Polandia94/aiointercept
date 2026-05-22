@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [unreleased]
 
+### Added
+
+- Auto-discovered pytest plugin with `aiointercept_server` (session-scoped) and `aiointercept_mock` (function-scoped, calls `clear()` between tests and re-pins `_caller_loop` so async callbacks dispatch on the test's loop). Requires `pytest-asyncio`.
+- `benchmarks/bench_compare.py` — standalone script comparing `aiointercept` (dns on/off) against `aioresponses` across nine scenarios. Run via `uv sync --group benchmarks && uv run python benchmarks/bench_compare.py`.
+
 ### Fixed
 
 - `clear()` followed by re-registering an HTTPS handler no longer breaks requests that reuse an existing keep-alive connection. `add()` now records the host in `_https_hosts` eagerly when the registered URL is `https://`, so the dispatcher keeps the correct scheme even when aiohttp skips the SSL hook on reused connections.

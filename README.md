@@ -325,6 +325,29 @@ URLs are normalized: fragments are stripped and query parameters are sorted.
 
 ---
 
+## Sharing the server across tests
+
+Each `async with aiointercept()` block starts a fresh `aiohttp.web` test server. The bundled pytest plugin (auto-discovered, requires `pytest-asyncio`) amortizes that with a session-scoped server and a function-scoped wrapper that calls `clear()` between tests.
+
+```python
+async def test_get_user(aiointercept_mock):
+    m = aiointercept_mock
+    m.get(f"{m.server_url}/user/1", payload={"id": 1, "name": "Alice"})
+
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(f"{m.server_url}/user/1")
+        assert resp.status == 200
+    m.assert_called_with(f"{m.server_url}/user/1", method="GET")
+```
+
+Fixtures: `aiointercept_server` (session) and `aiointercept_mock` (function — use this in tests). Override `aiointercept_server` in your `conftest.py` to customize.
+
+Caveats:
+
+- Defaults to `mock_external_urls=False`. To intercept URLs for the whole session, override `aiointercept_server` and pass `mock_external_urls=True` — note that the DNS/SSL patches are installed at the class level and stay live for every aiohttp call in the test process (this blocks real network calls).
+
+---
+
 ## Constructor Parameters
 
 | Parameter | Type | Default | Description |

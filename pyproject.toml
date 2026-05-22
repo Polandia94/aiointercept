@@ -38,6 +38,9 @@ Homepage = "https://github.com/Polandia94/aiointercept"
 Repository = "https://github.com/Polandia94/aiointercept"
 Issues = "https://github.com/Polandia94/aiointercept/issues"
 
+[project.entry-points.pytest11]
+aiointercept = "aiointercept.pytest_plugin"
+
 [tool.uv]
 package = true
 
@@ -96,4 +99,7 @@ dev = [
     "mypy (>=2.0.0,<2.1.0)",
     "pre-commit>=4.5.1",
     "pytest-cov>=7.1.0",
+]
+benchmarks = [
+    "aioresponses (>=0.7.6,<1.0.0)",
 ]
