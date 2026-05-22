@@ -82,9 +82,6 @@ select = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-[tool.mypy]
-exclude = ["benchmarks/"]
-
 [tool.coverage.run]
 source = ["aiointercept"]
 omit = ["benchmarks/*"]

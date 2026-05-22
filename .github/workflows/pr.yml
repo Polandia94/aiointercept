@@ -20,7 +20,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --group tests
 
       - name: Ruff
         run: uv run ruff check .
@@ -61,4 +61,6 @@ jobs:
         run: uv pip install aiohttp==${{ matrix.aiohttp-version }}
 
       - name: Tests
-        run: uv run pytest tests/ --cov --cov-fail-under=99
+        run: |
+          uv run coverage run -m pytest tests/
+          uv run coverage report --fail-under=99
