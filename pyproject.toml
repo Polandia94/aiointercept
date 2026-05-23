@@ -1,6 +1,6 @@
 [project]
 name = "aiointercept"
-version = "0.1.3"
+version = "0.1.4"
 description = "aiohttp mock library that routes requests through a real test server"
 authors = [
     {name = "Pablo Estevez",email = "pablo22estevez@gmail.com"}
