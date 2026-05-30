@@ -857,12 +857,12 @@ async def test_passthrough_https_explicit():
     """An https:// URL in the passthrough list reaches the real server with TLS."""
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=["https://httpbin.org/status/201"]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["https://httpbingo.org/status/201"]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
         assert mocked.status == 200
-        real = await session.get("https://httpbin.org/status/201")
+        real = await session.get("https://httpbingo.org/status/201")
         assert real.status == 201
 
 
@@ -873,7 +873,7 @@ async def test_passthrough_unmatched_https_no_patterns():
         m.get("http://example.com/mocked", status=200, body=b"mocked")
         mocked = await session.get("http://example.com/mocked")
         assert mocked.status == 200
-        real = await session.get("https://httpbin.org/status/200")
+        real = await session.get("https://httpbingo.org/status/200")
         assert real.status == 200
 
 
@@ -888,7 +888,7 @@ async def test_passthrough_unmatched_https_with_patterns():
     pattern = re.compile(r"^http://never\.matches/.*$")
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
         m.add(pattern, method="GET", status=200, repeat=True)
-        resp = await session.get("https://httpbin.org/status/200")
+        resp = await session.get("https://httpbingo.org/status/200")
         assert resp.status == 200
 
 

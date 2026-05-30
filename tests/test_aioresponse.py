@@ -596,12 +596,12 @@ class AIOResponseRedirectTest(AsyncTestCase):
         rsps.get(
             self.url,
             status=307,
-            headers={"Location": "https://httpbin.org"},
+            headers={"Location": "https://httpbingo.org"},
         )
-        rsps.get("https://httpbin.org")
+        rsps.get("https://httpbingo.org")
         response = await self.session.get(self.url, allow_redirects=True)
         self.assertEqual(response.status, 200)
-        self.assertEqual(str(response.url), "https://httpbin.org")
+        self.assertEqual(str(response.url), "https://httpbingo.org")
         self.assertEqual(len(response.history), 1)
         self.assertEqual(str(response.history[0].url), self.url)
 
@@ -610,12 +610,12 @@ class AIOResponseRedirectTest(AsyncTestCase):
         rsps.post(
             self.url,
             status=302,
-            headers={"Location": "https://httpbin.org"},
+            headers={"Location": "https://httpbingo.org"},
         )
-        rsps.get("https://httpbin.org")
+        rsps.get("https://httpbingo.org")
         response = await self.session.post(self.url, allow_redirects=True)
         self.assertEqual(response.status, 200)
-        self.assertEqual(str(response.url), "https://httpbin.org")
+        self.assertEqual(str(response.url), "https://httpbingo.org")
         self.assertEqual(response.method, "GET")
         self.assertEqual(len(response.history), 1)
         self.assertEqual(str(response.history[0].url), self.url)
@@ -625,7 +625,7 @@ class AIOResponseRedirectTest(AsyncTestCase):
         rsps.get(
             self.url,
             status=307,
-            headers={"Location": "https://httpbin.org"},
+            headers={"Location": "https://httpbingo.org"},
         )
         with self.assertRaises(ClientConnectionError):
             await self.session.get(self.url, allow_redirects=True)
@@ -658,7 +658,7 @@ class AIOResponseRedirectTest(AsyncTestCase):
 
     @aiointercept(True)
     async def test_relative_url_redirect_followed(self, rsps):
-        base_url = "https://httpbin.org"
+        base_url = "https://httpbingo.org"
         url = f"{base_url}/foo/bar"
         rsps.get(
             url,
@@ -677,7 +677,7 @@ class AIOResponseRedirectTest(AsyncTestCase):
     @network_retry
     async def test_pass_through_unmatched_requests(self):
         matched_url = "https://matched_example.org"
-        unmatched_url = "https://httpbin.org/get"
+        unmatched_url = "https://httpbingo.org/get"
         params_unmatched = {"foo": "bar"}
 
         async with aiointercept(True, passthrough_unmatched=True) as m:
@@ -687,7 +687,7 @@ class AIOResponseRedirectTest(AsyncTestCase):
                 URL(unmatched_url), params=params_unmatched
             )
             self.assertEqual(response.status, 200)
-            self.assertEqual(str(response.url), "https://httpbin.org/get?foo=bar")
+            self.assertEqual(str(response.url), "https://httpbingo.org/get?foo=bar")
             self.assertEqual(mocked_response.status, 200)
 
 
