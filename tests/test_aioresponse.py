@@ -212,7 +212,7 @@ class AIOResponsesTestCase(AsyncTestCase):
         # Wrong url
         with self.assertRaises(AssertionError):
             m.assert_called_once_with(
-                "http://httpbin.org/",
+                "http://httpbingo.org/",
                 method="POST",
                 data=payload,
                 headers={"User-Agent": "aiointercept"},
@@ -352,7 +352,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
     @network_retry
     async def test_address_as_instance_of_url_combined_with_pass_through(self):
-        external_api = "http://httpbin.org/status/201"
+        external_api = "http://httpbingo.org/status/201"
 
         async def doit():
             api_resp = await self.session.get(self.url)
@@ -370,7 +370,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
     @network_retry
     async def test_pass_through_with_origin_params(self):
-        external_api = "http://httpbin.org/get"
+        external_api = "http://httpbingo.org/get"
 
         async def doit(params):
             # we have to hit actual url,
@@ -382,7 +382,7 @@ class AIOResponsesTestCase(AsyncTestCase):
             params = {"foo": "bar"}
             ext = await doit(params=params)
             self.assertEqual(ext.status, 200)
-            self.assertEqual(str(ext.url), "http://httpbin.org/get?foo=bar")
+            self.assertEqual(str(ext.url), "http://httpbingo.org/get?foo=bar")
 
     @aiointercept(True)
     async def test_custom_response_class(self, m):
@@ -504,7 +504,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
     @aiointercept(True)
     async def test_assert_any_call(self, m: aiointercept):
-        http_bin_url = "http://httpbin.org"
+        http_bin_url = "http://httpbingo.org"
         m.get(self.url)
         m.get(http_bin_url)
         await self.session.get(self.url)
@@ -515,7 +515,7 @@ class AIOResponsesTestCase(AsyncTestCase):
 
     @aiointercept(True)
     async def test_assert_any_call_not_called(self, m: aiointercept):
-        http_bin_url = "http://httpbin.org"
+        http_bin_url = "http://httpbingo.org"
         m.get(self.url)
         response = await self.session.get(self.url)
         self.assertEqual(response.status, 200)
