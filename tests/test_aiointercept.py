@@ -293,12 +293,12 @@ async def test_passthrough_host_is_allowed():
     """Passthrough host resolves normally (hits real network)."""
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=["http://httpbin.org/status/200"]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["http://httpbingo.org/status/200"]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
         assert mocked.status == 200
-        real = await session.get("http://httpbin.org/status/200")
+        real = await session.get("http://httpbingo.org/status/200")
         assert real.status == 200
 
 
@@ -322,7 +322,7 @@ async def test_passthrough_unmatched_allows_real_requests():
         m.get("http://example.com/mocked", status=200, body=b"mocked")
         mocked = await session.get("http://example.com/mocked")
         assert mocked.status == 200
-        real = await session.get("http://httpbin.org/status/201")
+        real = await session.get("http://httpbingo.org/status/201")
         assert real.status == 201
 
 
@@ -349,7 +349,7 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched():
         resp_mocked = await session.get("http://pat.test/specific")
         assert resp_mocked.status == 200
         # Unmatched: proxied via real DNS to the actual server
-        resp_real = await session.get("http://httpbin.org/status/201")
+        resp_real = await session.get("http://httpbingo.org/status/201")
         assert resp_real.status == 201
 
 
@@ -857,12 +857,12 @@ async def test_passthrough_https_explicit():
     """An https:// URL in the passthrough list reaches the real server with TLS."""
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=["https://httpbin.org/status/201"]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["https://httpbingo.org/status/201"]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
         assert mocked.status == 200
-        real = await session.get("https://httpbin.org/status/201")
+        real = await session.get("https://httpbingo.org/status/201")
         assert real.status == 201
 
 
@@ -873,7 +873,7 @@ async def test_passthrough_unmatched_https_no_patterns():
         m.get("http://example.com/mocked", status=200, body=b"mocked")
         mocked = await session.get("http://example.com/mocked")
         assert mocked.status == 200
-        real = await session.get("https://httpbin.org/status/200")
+        real = await session.get("https://httpbingo.org/status/200")
         assert real.status == 200
 
 
@@ -888,7 +888,7 @@ async def test_passthrough_unmatched_https_with_patterns():
     pattern = re.compile(r"^http://never\.matches/.*$")
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
         m.add(pattern, method="GET", status=200, repeat=True)
-        resp = await session.get("https://httpbin.org/status/200")
+        resp = await session.get("https://httpbingo.org/status/200")
         assert resp.status == 200
 
 
@@ -1218,11 +1218,11 @@ async def test_passthrough_unmatched_url_handler_unknown_path_proxied():
     unregistered path on a registered host is proxied to the real server, not
     closed with ClientConnectionError."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
-        m.get("http://httpbin.org/status/200", status=418)
-        mocked = await session.get("http://httpbin.org/status/200")
+        m.get("http://httpbingo.org/status/200", status=418)
+        mocked = await session.get("http://httpbingo.org/status/200")
         assert mocked.status == 418
         # Same host, different path — should proxy to real httpbin, not close.
-        real = await session.get("http://httpbin.org/status/201")
+        real = await session.get("http://httpbingo.org/status/201")
         assert real.status == 201
 
 

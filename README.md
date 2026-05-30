@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/aiointercept.svg)](https://pypi.org/project/aiointercept/)
 [![Python](https://img.shields.io/pypi/pyversions/aiointercept.svg)](https://pypi.org/project/aiointercept/)
-[![CI](https://github.com/Polandia94/aiointercept/actions/workflows/pr.yml/badge.svg)](https://github.com/Polandia94/aiointercept/actions)
+[![CI](https://github.com/Polandia94/aiointercept/actions/workflows/ci.yml/badge.svg)](https://github.com/Polandia94/aiointercept/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 Mock `aiohttp` HTTP requests by routing them through a real `aiohttp.web` test server. Inspired by `aioresponses`, with a largely compatible API.
