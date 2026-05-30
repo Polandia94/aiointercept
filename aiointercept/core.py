@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import difflib
 import gc
 import inspect
 import json as json_module
@@ -405,6 +406,25 @@ class aiointercept:  # noqa: N801
     def _match_pattern(self, url: str) -> bool:
         return any(p.match(url) for p in self._patterns_list)
 
+    def _diagnose_unmatched(self, method: str, url_str: str) -> str:
+        request_line = f"{method} {url_str}"
+        existing = self.handlers.get((url_str, method))
+        if isinstance(existing, list) and not existing:
+            return (
+                f"aiointercept: no handler for {request_line} — "
+                "all registered handlers for this method+url have already been consumed "
+                "(finite repeat exhausted)"
+            )
+        candidates = sorted({f"{m} {u}" for (u, m) in self.handlers})
+        close = difflib.get_close_matches(request_line, candidates, n=1, cutoff=0.0) if candidates else []
+        if close:
+            diff = "\n".join(line.rstrip() for line in difflib.ndiff([request_line], [close[0]]))
+            return f"aiointercept: no matching handler — closest registered (diff):\n{diff}"
+        if self.patterns_handler:
+            patterns = sorted({p.pattern for (p, _) in self.patterns_handler})
+            return f"aiointercept: no handler for {request_line} — no exact handlers; registered patterns: {patterns}"
+        return f"aiointercept: no handler for {request_line} — no handlers registered."
+
     @staticmethod
     def _clear_all_connector_caches() -> None:
         """
@@ -493,6 +513,8 @@ class aiointercept:  # noqa: N801
                         headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
                         body=body,
                     )
+            warning_msg = self._diagnose_unmatched(request.method.upper(), str(url))
+            logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
             if request.transport:
                 request.transport.close()
