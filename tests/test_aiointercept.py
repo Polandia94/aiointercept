@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import logging
 import re
 import threading
 from random import uniform
@@ -180,6 +181,20 @@ async def test_repeat_zero():
         assert resp.status == 200
         with pytest.raises(ClientConnectionError):
             await session.get("http://repeat.test/once")
+
+
+async def test_consumed_handler_diagnosis(caplog):
+    """Re-requesting an exhausted finite-repeat handler reports it was already consumed."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post("http://repeat.test/once", status=200, repeat=1)
+        await session.post("http://repeat.test/once")
+        with caplog.at_level(logging.WARNING), pytest.raises(ClientConnectionError):
+            await session.post("http://repeat.test/once")
+    assert caplog.messages == [
+        "aiointercept: no handler for POST http://repeat.test/once — "
+        "all registered handlers for this method+url have already been consumed "
+        "(finite repeat exhausted)"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +380,42 @@ async def test_method_mismatch_raises():
         m.get("http://example.com/meth", status=200)
         with pytest.raises(ClientConnectionError):
             await session.post("http://example.com/meth")
+
+
+async def test_unmatched_logs_method_mismatch_hint(caplog):
+    """When only the method differs, the warning names the registered method."""
+    caplog.set_level("WARNING", logger="aiointercept.core")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.com/meth", status=200)
+        with pytest.raises(ClientConnectionError):
+            await session.post("http://example.com/meth")
+    messages = {r.message for r in caplog.records if r.name == "aiointercept.core"}
+    assert len(messages) == 1, messages
+    assert messages.pop() == (
+        "aiointercept: no matching handler — closest registered (diff):\n"
+        "- POST http://example.com/meth\n"
+        "? ^^^\n"
+        "+ GET http://example.com/meth\n"
+        "? ^^"
+    )
+
+
+async def test_unmatched_logs_closest_url_hint(caplog):
+    """When only the path differs, the warning names the closest registered URL."""
+    caplog.set_level("WARNING", logger="aiointercept.core")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.com/users", status=200)
+        with pytest.raises(ClientConnectionError):
+            await session.get("http://example.com/userss")
+    messages = {r.message for r in caplog.records if r.name == "aiointercept.core"}
+    assert len(messages) == 1, messages
+    (actual,) = messages
+    assert actual == (
+        "aiointercept: no matching handler — closest registered (diff):\n"
+        "- GET http://example.com/userss\n"
+        "?                             -\n"
+        "+ GET http://example.com/users"
+    )
 
 
 async def test_add_without_server_raises():
