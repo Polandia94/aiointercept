@@ -38,14 +38,14 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        aiohttp-version: ["3.13.3", "3.13.5"]
+        aiohttp-version: ["3.13.3", "3.14.0"]
         include:
           - os: windows-latest
             python-version: "3.14"
-            aiohttp-version: "3.13.5"
+            aiohttp-version: "3.14.0"
           - os: macos-latest
             python-version: "3.14"
-            aiohttp-version: "3.13.5"
+            aiohttp-version: "3.14.0"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
