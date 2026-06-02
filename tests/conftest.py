@@ -7,11 +7,11 @@ from typing import Any, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
 
-_RETRY_DELAYS = (None, 1, 2, 4)
+_RETRY_DELAYS = (None, 1, 2, 4, 11)
 
 
 def network_retry(fn: F) -> F:
-    """Retry an async test on network failure with delays of 1, 3, and 5 seconds."""
+    """Retry an async test on network failure with delays of 1, 2, 4, and 11 seconds."""
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
