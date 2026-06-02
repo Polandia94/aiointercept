@@ -102,6 +102,26 @@ async def test_something(mock_http):
 
 > `@pytest_asyncio.fixture` works in all pytest-asyncio modes. If you use `asyncio_mode = "auto"` in `pyproject.toml`, plain `@pytest.fixture` works too.
 
+### Manual `start()` / `stop()`
+
+For frameworks with their own setup/teardown hooks (e.g. `unittest.IsolatedAsyncioTestCase`) you can drive the lifecycle explicitly.
+```python
+import unittest
+from aiointercept import aiointercept
+
+class TestApi(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.helper = aiointercept()
+        await self.helper.start()
+
+    async def asyncTearDown(self):
+        await self.helper.stop()
+
+    async def test_user(self):
+        self.helper.get(f"{self.helper.server_url}/user/1", payload={"id": 1})
+        ...
+```
+
 ---
 
 ## Interception Modes

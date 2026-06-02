@@ -51,6 +51,26 @@ async def test_requests_outside_manager():
     m.assert_called_once_with("http://example.com/hello", method="GET")
 
 
+async def test_explicit_start_stop():
+    """start()/stop() drive the lifecycle without the context manager."""
+    m = aiointercept()
+    await m.start()
+    try:
+        assert m.server is not None
+        m.get(f"{m.server_url}/ping", status=200, body=b"pong")
+        async with ClientSession() as session:
+            resp = await session.get(f"{m.server_url}/ping")
+            assert resp.status == 200
+            assert await resp.read() == b"pong"
+        m.assert_called_once_with(f"{m.server_url}/ping", method="GET")
+    finally:
+        await m.stop()
+
+    # stop() tears the server down and clears registered handlers.
+    assert m.server is None
+    assert m.handlers == {}
+
+
 # ---------------------------------------------------------------------------
 # URL type variants: str, URL, Pattern
 # ---------------------------------------------------------------------------

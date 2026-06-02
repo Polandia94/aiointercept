@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Public `async start()` / `async stop()` lifecycle methods. `__aenter__` / `__aexit__` now delegate to them, so the mock can be driven from setup/teardown hooks (e.g. `unittest.IsolatedAsyncioTestCase`).
 - Unmatched requests now log a diagnostic `WARNING` on `aiointercept.core` explaining why nothing matched: an exhausted finite `repeat`, an `ndiff` against the closest registered `METHOD URL`, or the registered patterns.
 
 ## [0.1.4] - 2026-05-23
