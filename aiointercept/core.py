@@ -231,6 +231,10 @@ class aiointercept:  # noqa: N801
         self._caller_loop: asyncio.AbstractEventLoop | None = None
 
     async def __aenter__(self) -> "aiointercept":
+        await self.start()
+        return self
+
+    async def start(self) -> None:
         self._caller_loop = asyncio.get_running_loop()
         await self._start_server_thread()
         assert self._server_loop is not None
@@ -267,14 +271,15 @@ class aiointercept:  # noqa: N801
             await self._stop_server_thread()
             raise
 
-        return self
-
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
+        await self.stop()
+
+    async def stop(self) -> None:
         try:
             if self._mock_external_urls:
                 global _patch_refcount, _real_threaded_resolve, _real_async_resolve, _real_ssl_context
