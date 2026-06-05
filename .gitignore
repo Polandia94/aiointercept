@@ -10,3 +10,4 @@ plan.md
 .pytest_cache/
 htmlcov/
 dist/
+docs/_build/
