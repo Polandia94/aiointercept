@@ -88,4 +88,4 @@ async def mock_http():
 - `call_count` / `call_args_list` are not implemented
 - `timeout=` passthrough is not supported
 
-Once your tests are passing, consider migrating to `mock_external_urls=False` (the default) — no DNS patching, cleaner isolation. See the README for details.
+Once your tests are passing, consider migrating to `mock_external_urls=False` (the default) — no DNS patching, cleaner isolation.

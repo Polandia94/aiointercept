@@ -1,0 +1,4 @@
+# Documentation build dependencies for Read the Docs (pip-installed).
+sphinx>=8.0
+aiohttp-theme>=0.1.7
+myst-parser>=4.0

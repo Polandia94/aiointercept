@@ -1,0 +1,24 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html
+
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+
+sphinx:
+  configuration: docs/conf.py
+
+python:
+  install:
+    # Docs build deps (Sphinx, theme, MyST).
+    - requirements: docs/requirements.txt
+    # The package itself, so autodoc can import aiointercept.
+    - method: pip
+      path: .
+
+formats:
+  - pdf
+  - epub

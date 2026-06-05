@@ -33,6 +33,21 @@ class AiointerceptRequestKwargs(TypedDict):
 
 
 class AiointerceptRequest(web.Request):
+    """A subclass of :class:`aiohttp.web.Request` captured by the mock server.
+
+    Instances are the live request objects the test server received, augmented
+    with the fields below so callbacks and assertions can inspect the body that
+    was already consumed off the wire. They are stored in
+    :attr:`aiointercept.requests` and passed to callbacks registered via
+    :meth:`aiointercept.add`.
+
+    Attributes:
+        captured_body: The raw request body as bytes, read before dispatch.
+        kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
+            key → list of values), and ``json`` (decoded body, or ``None``) —
+            the keyword arguments a callback receives.
+    """
+
     captured_body: bytes
     kwargs: AiointerceptRequestKwargs
 
@@ -170,8 +185,31 @@ handler_type = Callable[[web.Request], Awaitable[web.StreamResponse]] | _CloseCo
 
 
 class aiointercept:  # noqa: N801
-    """
-    Mock aiohttp requests by redirecting DNS to a local aiohttp.web test server.
+    """Mock :mod:`aiohttp` requests by routing them through a real test server.
+
+    Starts a real :class:`aiohttp.web.Application` on localhost and directs the
+    client's requests to it. In the default mode you point the client at
+    :attr:`server_url`; with ``mock_external_urls=True`` the DNS resolver is
+    patched at the class level so any aiohttp request to a registered host is
+    transparently intercepted. Register responses with :meth:`add` or the
+    per-method shortcuts (:meth:`get`, :meth:`post`, ...), then inspect what was
+    sent via :attr:`requests` and the ``assert_*`` helpers.
+
+    Use it as an async context manager, as a decorator, or drive the lifecycle
+    explicitly with :meth:`start` / :meth:`stop`::
+
+        async with aiointercept() as m:
+            m.get(f"{m.server_url}/users", payload=[{"id": 1}])
+            async with aiohttp.ClientSession() as session:
+                resp = await session.get(f"{m.server_url}/users")
+
+    Attributes:
+        server_url: Base URL of the running test server, e.g.
+            ``"http://127.0.0.1:54321"``. Set once :meth:`start` has run.
+        server_host: Host the test server is bound to.
+        server_port: Port the test server is listening on.
+        requests: Mapping of ``(METHOD, normalized URL)`` to the list of
+            :class:`AiointerceptRequest` objects received, in arrival order.
     """
 
     def __init__(
@@ -182,6 +220,23 @@ class aiointercept:  # noqa: N801
         param: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Create a mock.
+
+        Args:
+            mock_external_urls: When ``True``, patch the DNS resolver at the
+                process level so requests to any registered host are intercepted,
+                even those made by third-party libraries. When ``False``
+                (default), only requests sent to :attr:`server_url` are
+                intercepted and no global state is modified.
+            passthrough: Hosts whose requests bypass the mock and reach the real
+                network. Requires ``mock_external_urls=True``.
+            passthrough_unmatched: When ``True``, proxy every unmatched request
+                to the real network instead of failing it. Requires
+                ``mock_external_urls=True``.
+            param: Keyword-argument name under which the mock is injected when
+                the instance is used as a decorator. Defaults to appending it as
+                the last positional argument.
+        """
         if kwargs:
             warnings.warn(
                 "Passing extra parameters to aiointercept via kwargs is deprecated "
@@ -235,6 +290,13 @@ class aiointercept:  # noqa: N801
         return self
 
     async def start(self) -> None:
+        """Start the test server and install patches (if any).
+
+        Called automatically by ``__aenter__``. Call it directly from a
+        framework's setup hook (e.g. ``asyncSetUp``) when not using the context
+        manager. After this returns, :attr:`server_url` is available. Pair every
+        ``start()`` with a :meth:`stop`.
+        """
         self._caller_loop = asyncio.get_running_loop()
         await self._start_server_thread()
         assert self._server_loop is not None
@@ -280,6 +342,12 @@ class aiointercept:  # noqa: N801
         await self.stop()
 
     async def stop(self) -> None:
+        """Stop the test server and remove any DNS/SSL patches.
+
+        Called automatically by ``__aexit__``. When DNS patching is active, the
+        patches are only fully removed once the last concurrently-running
+        instance stops.
+        """
         try:
             if self._mock_external_urls:
                 global _patch_refcount, _real_threaded_resolve, _real_async_resolve, _real_ssl_context
