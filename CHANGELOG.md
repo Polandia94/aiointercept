@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-06-09
+
+### Added
+
+- Public docs on https://aiointercept.readthedocs.io
+
+### Improved
+
+- The per-`start()` DNS-cache purge now tracks live `TCPConnector` instances in a `weakref.WeakSet` instead of scanning the whole heap via `gc.get_objects()`, so its cost no longer grows with the process heap size. Especially impactful for large applications and test suites. Thanks to [@agroebe](https://github.com/agroebe).
+
 ## [0.1.5] - 2026-06-02
 
 ### Added
