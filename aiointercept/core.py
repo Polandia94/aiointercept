@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import difflib
-import gc
 import inspect
 import json as json_module
 import logging
@@ -9,6 +8,7 @@ import socket
 import threading
 import typing
 import warnings
+import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import wraps
 from re import Pattern
@@ -78,6 +78,15 @@ _real_async_resolve: Any = None
 _real_ssl_context: Any = None
 _active_instances: "list[aiointercept]" = []
 
+_tcp_connectors: "weakref.WeakSet[TCPConnector]" = weakref.WeakSet()
+_original_tcp_connector_init = TCPConnector.__init__
+
+@wraps(_original_tcp_connector_init)
+def _patched_tcp_connector_init(self: "TCPConnector", *args: Any, **kwargs: Any) -> None:
+    _original_tcp_connector_init(self, *args, **kwargs)
+    _tcp_connectors.add(self)
+
+TCPConnector.__init__ = _patched_tcp_connector_init # type: ignore[method-assign]
 
 def _make_resolve_result(host: str, inst: "aiointercept", family: "socket.AddressFamily") -> "ResolveResult":
     return ResolveResult(
@@ -500,15 +509,10 @@ class aiointercept:  # noqa: N801
 
     @staticmethod
     def _clear_all_connector_caches() -> None:
-        """
-        Walk every TCPConnector referenced by a live ClientSession and clear
-        its DNS cache.  This ensures pre-patch resolutions are not reused.
-        """
-        for obj in gc.get_objects():
+        """Clear DNS cache of every TCPConnector instance. This ensures pre-patch resolutions are not reused."""
+        for connector in list(_tcp_connectors):
             with contextlib.suppress(Exception):
-                if not isinstance(obj, aiohttp.TCPConnector):
-                    continue
-                obj.clear_dns_cache()
+                connector.clear_dns_cache()
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
         url = normalize_url(request.url)
