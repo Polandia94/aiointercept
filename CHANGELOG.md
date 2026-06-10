@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## Unreleased
+
+### Fixed
+
+- Callbacks were receiving the compiled regex instead of the real URL; now every callback receives a yarl `URL`.
+- Callbacks with a `Content-Type` header were raising an exception (the header collided with the default content type); now fixed.
 
 ## [Unreleased]
 

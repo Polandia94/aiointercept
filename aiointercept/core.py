@@ -45,10 +45,15 @@ class AiointerceptRequest(web.Request):
         kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
             key → list of values), and ``json`` (decoded body, or ``None``) —
             the keyword arguments a callback receives.
+        canonical_url: The normalized request URL with the original scheme
+            restored (e.g. ``https://`` even though the test server received the
+            request over plain HTTP). This is the URL passed to callbacks and
+            used as the :attr:`aiointercept.requests` key.
     """
 
     captured_body: bytes
     kwargs: AiointerceptRequestKwargs
+    canonical_url: URL
 
     @classmethod
     def upgrade(
@@ -56,10 +61,12 @@ class AiointerceptRequest(web.Request):
         request: web.Request,
         captured_body: bytes,
         kwargs: "AiointerceptRequestKwargs",
+        canonical_url: URL,
     ) -> "AiointerceptRequest":
         request.__class__ = cls
         request.captured_body = captured_body  # type: ignore[attr-defined]
         request.kwargs = kwargs  # type: ignore[attr-defined]
+        request.canonical_url = canonical_url  # type: ignore[attr-defined]
         return cast("AiointerceptRequest", request)
 
 
@@ -228,7 +235,9 @@ class CallbackResult:
         method: HTTP method (default GET; not used by the server handler).
         status: HTTP response status code.
         body: Raw response body as str or bytes.
-        content_type: ``Content-Type`` header value.
+        content_type: ``Content-Type`` header value. Set to ``None`` when
+            *headers* already carries a ``Content-Type`` entry, to avoid
+            colliding with it.
         payload: Response body as a dict; serialized to JSON automatically.
         headers: Additional response headers.
         response_class: Ignored (present for aioresponses API compatibility).
@@ -249,8 +258,12 @@ class CallbackResult:
         self.method = method
         self.status = status
         self.body = body
-        self.content_type = content_type
         self.payload = payload
+        # Drop the default content_type when the caller already supplied a
+        # Content-Type header (case-insensitively), to avoid the ValueError
+        # aiohttp.web.Response raises when both are set.
+        has_content_type_header = headers is not None and any(k.lower() == "content-type" for k in headers)
+        self.content_type: str | None = None if has_content_type_header else content_type
         self.headers = headers
         self.response_class = response_class
         self.reason = reason
@@ -582,7 +595,7 @@ class aiointercept:  # noqa: N801
             "json": json,
         }
 
-        aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs)
+        aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
         self.requests[key].append(aiointercept_request)
@@ -722,12 +735,17 @@ class aiointercept:  # noqa: N801
             body = body.encode()
 
         resp_headers = dict(headers or {})
-        if not content_type and "Content-Type" not in resp_headers:
+        if not content_type and not any(k.lower() == "content-type" for k in resp_headers):
             content_type = "application/json"
 
         async def handler(request: web.Request) -> web.Response:
             if callable(callback):
-                cb_kwargs = cast("AiointerceptRequest", request).kwargs
+                aiointercept_request = cast("AiointerceptRequest", request)
+                cb_kwargs = aiointercept_request.kwargs
+                # Use the canonical URL (normalized, original scheme restored)
+                # rather than request.url, which is always http:// here because
+                # the test server receives the request over plain HTTP.
+                cb_url = aiointercept_request.canonical_url
                 if inspect.iscoroutinefunction(callback):
                     # Async callbacks run on the caller's loop so that
                     # loop-bound primitives (asyncio.Event, asyncio.Queue,
@@ -739,12 +757,12 @@ class aiointercept:  # noqa: N801
                         and caller_loop is not asyncio.get_running_loop()
                     ):
                         result = await asyncio.wrap_future(
-                            asyncio.run_coroutine_threadsafe(callback(url, **cb_kwargs), caller_loop)
+                            asyncio.run_coroutine_threadsafe(callback(cb_url, **cb_kwargs), caller_loop)
                         )
                     else:
-                        result = await callback(url, **cb_kwargs)
+                        result = await callback(cb_url, **cb_kwargs)
                 else:
-                    result = callback(url, **cb_kwargs)
+                    result = callback(cb_url, **cb_kwargs)
                 _status = result.status
                 _body = result.body
                 _headers = result.headers or {}
