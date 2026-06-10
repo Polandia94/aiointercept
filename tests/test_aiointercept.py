@@ -6,6 +6,7 @@ import logging
 import re
 import threading
 from random import uniform
+from unittest import mock
 
 import aiohttp
 import pytest
@@ -580,6 +581,16 @@ async def test_assert_called_with_wrong_url():
         await session.get(url)
         with pytest.raises(AssertionError):
             m.assert_called_with("http://example.com/y")
+
+
+async def test_assert_called_with_headers_any():
+    """assert_called_with() matches specific request headers and fails on wrong values."""
+    url = "http://example.com/headers"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url, status=200)
+        await session.get(url, headers={"X-Custom": "yes"})
+        m.assert_called_with(url, headers=mock.ANY, data=mock.ANY)
+        m.assert_called_with(url, headers=mock.ANY, json=mock.ANY)
 
 
 # ---------------------------------------------------------------------------

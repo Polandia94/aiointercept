@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow mock.ANY on JSON, data and headers on asserts.
+
 ### Improved
 
 - DNS-cache invalidation no longer tracks `TCPConnector` instances at all. Instead of patching `TCPConnector.__init__` at import time and clearing every live connector's cache on `start()`, a class-level `_resolve_host` patch (installed only when `mock_external_urls=True`) drops the relevant cache entry per lookup. No monkey-patching happens unless `mock_external_urls=True`.
