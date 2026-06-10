@@ -1116,6 +1116,97 @@ async def test_callback_result_headers():
         assert resp.headers.get("X-From-Callback") == "yes"
 
 
+async def test_regex_callback_receives_actual_url():
+    """A callback registered with a regex pattern must receive the request URL,
+    not the compiled re.Pattern it was registered with."""
+    seen = {}
+
+    def callback(url, **kwargs):
+        seen["url"] = url
+        return CallbackResult(payload={"ok": True})
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"http://example\.test/api/.*"), callback=callback)
+        async with aiohttp.ClientSession() as session, session.get("http://example.test/api/status") as resp:
+            assert await resp.json() == {"ok": True}
+
+    assert isinstance(seen["url"], URL)
+    assert str(seen["url"]) == "http://example.test/api/status"
+
+
+async def test_callback_result_content_type_header():
+    """A CallbackResult carrying an explicit Content-Type header must not collide
+    with the default content_type and trigger an internal server error."""
+
+    def callback(url, **kwargs):
+        return CallbackResult(
+            body=b"hello",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.test/file", callback=callback)
+        async with aiohttp.ClientSession() as session, session.get("http://example.test/file") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("application/octet-stream")
+            assert await resp.read() == b"hello"
+
+
+async def test_callback_result_content_type_header_case_insensitive():
+    """A lower-cased content-type header must also be detected so it does not
+    collide with the default content_type."""
+
+    def callback(url, **kwargs):
+        return CallbackResult(
+            body=b"hello",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.test/file", callback=callback)
+        async with aiohttp.ClientSession() as session, session.get("http://example.test/file") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("application/octet-stream")
+            assert await resp.read() == b"hello"
+
+
+async def test_https_callback_receives_https_url():
+    """Under mock_external_urls=True, a callback for an https:// URL must receive
+    a URL carrying the https:// scheme — not the http:// the test server saw."""
+    seen = {}
+
+    def callback(url, **kwargs):
+        seen["url"] = url
+        return CallbackResult(payload={"ok": True})
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("https://secure.test/api/status", callback=callback)
+        async with aiohttp.ClientSession() as session, session.get("https://secure.test/api/status") as resp:
+            assert await resp.json() == {"ok": True}
+
+    assert isinstance(seen["url"], URL)
+    assert seen["url"].scheme == "https"
+    assert str(seen["url"]) == "https://secure.test/api/status"
+
+
+async def test_https_regex_callback_receives_https_url():
+    """A regex callback matching an https:// URL must also receive the https:// scheme."""
+    seen = {}
+
+    def callback(url, **kwargs):
+        seen["url"] = url
+        return CallbackResult(payload={"ok": True})
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"https://secure\.test/api/.*"), callback=callback)
+        async with aiohttp.ClientSession() as session, session.get("https://secure.test/api/status") as resp:
+            assert await resp.json() == {"ok": True}
+
+    assert isinstance(seen["url"], URL)
+    assert seen["url"].scheme == "https"
+    assert str(seen["url"]) == "https://secure.test/api/status"
+
+
 # ---------------------------------------------------------------------------
 # exception=True (no log warning) vs exception=SomeInstance (with log warning)
 # ---------------------------------------------------------------------------
