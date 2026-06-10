@@ -322,6 +322,31 @@ async def test_passthrough_host_is_allowed():
         assert real.status == 200
 
 
+# ---------------------------------------------------------------------------
+# Stale DNS cache: a connector that resolved a host for real before the mock
+# started must not reuse that resolution once mocking is active.
+# ---------------------------------------------------------------------------
+
+
+@network_retry
+async def test_real_request_then_mock_same_host_ignores_stale_dns():
+    """A real request leaves a live keep-alive connection (and DNS cache entry)
+    for the host; once the mock is active, a request to the same host is served
+    by the mock, not reused against the real server."""
+    url = "http://httpbingo.org/status/200"
+    async with ClientSession() as session:
+        # Real request: resolves httpbingo.org, caches its address, and leaves a
+        # keep-alive connection to the real server in the pool.
+        real = await session.get(url)
+        assert real.status == 200
+
+        async with aiointercept(mock_external_urls=True) as m:
+            m.get(url, status=418)
+            mocked = await session.get(url)
+            assert mocked.status == 418
+            m.assert_called_once()
+
+
 async def test_registered_host_missing_path_raises():
     """Registered host with an unregistered path raises ClientConnectionError."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
@@ -740,20 +765,20 @@ def test_passthrough_invalid_url_fallback():
 
 
 # ---------------------------------------------------------------------------
-# _clear_all_connector_caches swallows exceptions (lines 262-263)
+# _shared_resolve_host swallows clear_dns_cache failures
 # ---------------------------------------------------------------------------
 
 
-async def test_clear_connector_cache_exception_swallowed():
-    """If clear_dns_cache() raises, it should be swallowed silently."""
+async def test_resolve_host_clear_cache_exception_swallowed():
+    """If a connector's clear_dns_cache() raises during resolution, the failure
+    is swallowed and the request still resolves through the patched resolver."""
     connector = aiohttp.TCPConnector()
 
-    def raising_clear():
+    def raising_clear(*args, **kwargs):
         raise RuntimeError("simulated dns cache error")
 
     connector.clear_dns_cache = raising_clear  # type: ignore[method-assign]
     session = ClientSession(connector=connector)
-    # Should not raise even though clear_dns_cache raises
     async with aiointercept(mock_external_urls=True) as m:
         m.get("http://clearcache.test/", status=200)
         resp = await session.get("http://clearcache.test/")
@@ -1375,10 +1400,14 @@ async def test_server_thread_startup_failure_propagates():
 
 
 async def test_aenter_failure_after_server_start_cleans_up():
-    """If __aenter__ fails after the server starts, _stop_server_thread is called."""
+    """If __aenter__ fails after the server starts, the server thread is stopped
+    and the class-level patches are rolled back (no leaked refcount/state)."""
     from aiohttp.connector import TCPConnector
 
     from aiointercept import core as ai_core
+
+    refcount_before = ai_core._patch_refcount
+    resolve_host_before = TCPConnector._resolve_host
 
     m = aiointercept(mock_external_urls=True)
 
@@ -1387,26 +1416,12 @@ async def test_aenter_failure_after_server_start_cleans_up():
 
     m._make_bypass_session = bad  # type: ignore[method-assign]
 
-    try:
-        with pytest.raises(RuntimeError, match="bypass failed"):
-            await m.__aenter__()
-    finally:
-        # The except branch only stops the server thread — patching state is left
-        # incremented. Roll it back manually so other tests are not affected.
-        with ai_core._patch_lock:
-            if m in ai_core._active_instances:
-                ai_core._active_instances.remove(m)
-                ai_core._patch_refcount -= 1
-                if ai_core._patch_refcount == 0:
-                    if ai_core._real_threaded_resolve is not None:
-                        ThreadedResolver.resolve = ai_core._real_threaded_resolve  # type: ignore[method-assign]
-                    if ai_core._real_async_resolve is not None:
-                        AsyncResolver.resolve = ai_core._real_async_resolve  # type: ignore[method-assign]
-                    if ai_core._real_ssl_context is not None:
-                        TCPConnector._get_ssl_context = ai_core._real_ssl_context  # type: ignore[method-assign]
-                    ai_core._real_threaded_resolve = None
-                    ai_core._real_async_resolve = None
-                    ai_core._real_ssl_context = None
+    with pytest.raises(RuntimeError, match="bypass failed"):
+        await m.__aenter__()
 
+    # start() rolls its own patch state back on failure.
     assert m._server_thread is None
     assert m._server_loop is None
+    assert m not in ai_core._active_instances
+    assert ai_core._patch_refcount == refcount_before
+    assert TCPConnector._resolve_host is resolve_host_before
