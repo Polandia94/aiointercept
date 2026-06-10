@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Callbacks were receiving the compiled regex instead of the real URL; now every callback receives a yarl `URL`.
 - Callbacks with a `Content-Type` header were raising an exception (the header collided with the default content type); now fixed.
 
+## [Unreleased]
+
+### Fixed
+
+- Allow mock.ANY on JSON, data and headers on asserts.
+
+### Improved
+
+- DNS-cache invalidation no longer tracks `TCPConnector` instances at all. Instead of patching `TCPConnector.__init__` at import time and clearing every live connector's cache on `start()`, a class-level `_resolve_host` patch (installed only when `mock_external_urls=True`) drops the relevant cache entry per lookup. No monkey-patching happens unless `mock_external_urls=True`.
+
+### Fixed
+
+- With `mock_external_urls=True`, a request to a mocked host is now intercepted even when the client already holds a live keep-alive connection to the real server. A class-level `TCPConnector._get` patch refuses to reuse a pooled connection for intercepted hosts, forcing a fresh (redirected) connection; passthrough hosts still reuse their connections.
+- A failed `start()` (e.g. when bypass-session creation raises) now rolls back its class-level patches instead of leaking the patch refcount onto subsequent mocks.
+
 ## [0.1.6] - 2026-06-09
 
 ### Added
