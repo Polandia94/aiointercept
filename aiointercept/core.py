@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import wraps
 from re import Pattern
 from typing import Any, TypedDict, cast
+from unittest import mock
 from urllib.parse import parse_qs, urlencode
 
 import aiohttp
@@ -81,12 +82,15 @@ _active_instances: "list[aiointercept]" = []
 _tcp_connectors: "weakref.WeakSet[TCPConnector]" = weakref.WeakSet()
 _original_tcp_connector_init = TCPConnector.__init__
 
+
 @wraps(_original_tcp_connector_init)
 def _patched_tcp_connector_init(self: "TCPConnector", *args: Any, **kwargs: Any) -> None:
     _original_tcp_connector_init(self, *args, **kwargs)
     _tcp_connectors.add(self)
 
-TCPConnector.__init__ = _patched_tcp_connector_init # type: ignore[method-assign]
+
+TCPConnector.__init__ = _patched_tcp_connector_init  # type: ignore[method-assign]
+
 
 def _make_resolve_result(host: str, inst: "aiointercept", family: "socket.AddressFamily") -> "ResolveResult":
     return ResolveResult(
@@ -870,7 +874,7 @@ class aiointercept:  # noqa: N801
             raise AssertionError(f"No calls to {method.upper()} {url}")
         request: AiointerceptRequest = self.requests[key][-1]
         actual_body = request.captured_body
-        if json is not None:
+        if json is not None and json is not mock.ANY:
             # aiohttp sends json= as JSON-encoded bytes with application/json
             actual_body_str = actual_body.decode(errors="replace")
             try:
@@ -878,7 +882,7 @@ class aiointercept:  # noqa: N801
             except Exception as exc:
                 raise AssertionError(f"Expected JSON body {json!r}, got non-JSON body {actual_body!r}") from exc
             assert actual_json == json, f"Expected JSON body {json!r}, got {actual_json!r} (raw body {actual_body!r})"
-        elif data is not None:
+        elif data is not None and data is not mock.ANY:
             if not isinstance(data, (str, bytes)):
                 actual_ct = request.headers.get("Content-Type", "")
                 if actual_ct and "application/x-www-form-urlencoded" not in actual_ct:
@@ -898,7 +902,7 @@ class aiointercept:  # noqa: N801
             actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
             assert expected_headers == actual_headers, f"Expected headers {expected_headers!r}, got {actual_headers!r}"
-        elif headers:
+        elif headers and headers is not mock.ANY:
             actual_headers_proxy = request.headers
             for k, v in headers.items():
                 assert actual_headers_proxy.get(k) == v, (
