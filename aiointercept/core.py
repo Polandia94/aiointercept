@@ -45,8 +45,9 @@ class AiointerceptRequest(web.Request):
     Attributes:
         captured_body: The raw request body as bytes, read before dispatch.
         kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
-            key → list of values), and ``json`` (decoded body, or ``None``) —
-            the keyword arguments a callback receives.
+            key → list of values), ``data`` (raw body or ``None`` if no body),
+            `and ``json`` (decoded body, or ``None``) — the keyword arguments
+            a callback receives.
         canonical_url: The normalized request URL with the original scheme
             restored (e.g. ``https://`` even though the test server received the
             request over plain HTTP). This is the URL passed to callbacks and
