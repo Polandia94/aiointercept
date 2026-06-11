@@ -8,6 +8,7 @@ import threading
 import typing
 import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from functools import wraps
 from re import Pattern
 from typing import Any, TypedDict, cast
@@ -29,6 +30,7 @@ class AiointerceptRequestKwargs(TypedDict):
     headers: Mapping[str, str]
     query: Mapping[str, Sequence[str]]
     json: Any | None
+    data: bytes | None
 
 
 class AiointerceptRequest(web.Request):
@@ -59,7 +61,7 @@ class AiointerceptRequest(web.Request):
     def upgrade(
         cls,
         request: web.Request,
-        captured_body: bytes,
+        captured_body: bytes | None,
         kwargs: "AiointerceptRequestKwargs",
         canonical_url: URL,
     ) -> "AiointerceptRequest":
@@ -582,17 +584,19 @@ class aiointercept:  # noqa: N801
 
         key = (request.method.upper(), url)
         self.requests.setdefault(key, [])
-        captured_body = await request.read() if request.can_read_body else b""
-        try:
-            json = json_module.loads(captured_body) if captured_body else None
-        except Exception:
-            json = None
+        captured_body = None
+        json = None
+        if request.can_read_body:
+            captured_body = await request.read()
+            with suppress(Exception):
+                json = json_module.loads(captured_body) if captured_body else None
         # this kwargs will be removed, should be deprecated in the future
         request_kwargs: AiointerceptRequestKwargs = {
             "headers": request.headers,
             # Use getall so duplicate keys (?a=1&a=2) aren't collapsed to one value.
             "query": {k: request.query.getall(k) for k in dict.fromkeys(request.query)},
             "json": json,
+            "data": captured_body,
         }
 
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
