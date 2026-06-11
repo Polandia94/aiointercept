@@ -83,7 +83,7 @@ async def mock_http():
 - `exception=SomeError(...)` → use `exception=True` (always raises `ClientConnectionError`)
 - `add(response_class=X)` → drop `response_class=`, it is ignored
 - `assert_called_with(url, ssl=False)` → drop client-only kwargs like `ssl=`, `timeout=`; they are silently ignored but a `DeprecationWarning` is emitted listing the dropped keys
-- Callbacks only receive `headers`, `query`, and `json` (no client-side kwargs)
+- Callbacks only receive `headers`, `query`, `data`, and `json` (no client-side kwargs)
 - Bare IP addresses are not intercepted
 - `call_count` / `call_args_list` are not implemented
 - `timeout=` passthrough is not supported
