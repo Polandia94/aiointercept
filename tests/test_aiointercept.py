@@ -522,8 +522,11 @@ async def test_assert_called_with_json():
         m.post(url, status=200)
         await session.post(url, json={"x": 1})
         m.assert_called_with(url, method="POST", json={"x": 1})
-        with pytest.raises(AssertionError):
+        with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, method="POST", json={"x": 2})
+    assert str(exc_info.value) == (
+        "JSON body mismatch: expected {'x': 2}, got {'x': 1}\n- {'x': 2}\n?       ^\n+ {'x': 1}\n?       ^"
+    )
 
 
 async def test_assert_called_with_data_bytes():
@@ -533,6 +536,29 @@ async def test_assert_called_with_data_bytes():
         m.post(url, status=200)
         await session.post(url, data=b"rawbytes")
         m.assert_called_with(url, method="POST", data=b"rawbytes")
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with(url, method="POST", data=b"otherbytes")
+    assert str(exc_info.value) == ("Body mismatch: expected otherbytes, got rawbytes\n- otherbytes\n+ rawbytes")
+
+
+async def test_assert_called_with_huge_body_diff_is_bounded():
+    """A mismatch between very large bodies stays fast and the message bounded.
+
+    A raw body is a single very long line, which would otherwise push
+    ``difflib.ndiff`` into quadratic blow-up; the diff body must be clipped.
+    """
+    url = "http://example.com/huge"
+    sent = ("a" * 5000).encode()
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, data=sent)
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with(url, method="POST", data=("b" * 5000).encode())
+    message = str(exc_info.value)
+    # Summary line is capped, and the per-line clip marker keeps the body short.
+    assert message.startswith("Body mismatch: expected ")
+    assert "…(line truncated)" in message
+    assert len(message) < 2000
 
 
 async def test_assert_called_with_data_string():
@@ -551,6 +577,15 @@ async def test_assert_called_with_data_dict():
         m.post(url, status=200)
         await session.post(url, data={"field": "value"})
         m.assert_called_with(url, method="POST", data={"field": "value"})
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with(url, method="POST", data={"field": "other"})
+    assert str(exc_info.value) == (
+        "Form-encoded body mismatch: expected {'field': ['other']}, got {'field': ['value']}\n"
+        "- {'field': ['other']}\n"
+        "?             ^^^ -\n"
+        "+ {'field': ['value']}\n"
+        "?             ^^^^"
+    )
 
 
 async def test_assert_called_with_headers():
@@ -579,8 +614,11 @@ async def test_assert_called_with_wrong_url():
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
         m.get(url, status=200)
         await session.get(url)
-        with pytest.raises(AssertionError):
+        with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with("http://example.com/y")
+    assert str(exc_info.value) == (
+        "No calls to GET http://example.com/y\nDid you mean one of:\n  - GET http://example.com/x"
+    )
 
 
 async def test_assert_called_with_headers_any():
@@ -591,6 +629,26 @@ async def test_assert_called_with_headers_any():
         await session.get(url, headers={"X-Custom": "yes"})
         m.assert_called_with(url, headers=mock.ANY, data=mock.ANY)
         m.assert_called_with(url, headers=mock.ANY, json=mock.ANY)
+
+
+async def test_no_calls_message_when_nothing_recorded():
+    """assert_any_call with no recorded requests reports that explicitly."""
+    async with aiointercept(mock_external_urls=True) as m:
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_any_call("http://example.com/missing")
+    assert str(exc_info.value) == ("No calls to GET http://example.com/missing\nNo requests were recorded.")
+
+
+async def test_no_calls_message_suggests_recorded_calls():
+    """The message suggests recorded calls even when none is a close match."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.com/alpha", status=200)
+        await session.get("http://example.com/alpha")
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with("http://totally-different.test/zzzzzzzz")
+    assert str(exc_info.value) == (
+        "No calls to GET http://totally-different.test/zzzzzzzz\nDid you mean one of:\n  - GET http://example.com/alpha"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1050,9 +1108,21 @@ async def test_assert_called_with_strict_headers_fail():
     url = "http://example.com/strictfail"
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
         m.get(url, status=200)
-        await session.get(url, headers={"X-Token": "abc"})
-        with pytest.raises(AssertionError):
+        # Suppress the version-dependent auto-added headers (User-Agent,
+        # Accept-Encoding, ...) so the captured header map is deterministic.
+        await session.get(
+            url,
+            headers={"X-Token": "abc"},
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, headers={"X-Token": "wrong"}, strict_headers=True)
+    assert str(exc_info.value) == (
+        "Headers mismatch: expected {'X-Token': 'wrong'}, "
+        "got {'Host': 'example.com', 'X-Token': 'abc'}\n"
+        "- {'X-Token': 'wrong'}\n"
+        "+ {'Host': 'example.com', 'X-Token': 'abc'}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1434,8 +1504,13 @@ async def test_assert_called_with_json_when_body_not_json():
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
         m.post(url, status=200)
         await session.post(url, data=b"this is not json{")
-        with pytest.raises(AssertionError, match="non-JSON body"):
+        with pytest.raises(AssertionError, match="non-JSON body") as exc_info:
             m.assert_called_with(url, method="POST", json={"x": 1})
+    assert str(exc_info.value) == (
+        "Expected JSON body, got non-JSON body: expected {'x': 1}, got this is not json{\n"
+        "- {'x': 1}\n"
+        "+ this is not json{"
+    )
 
 
 async def test_async_callback_runs_on_server_loop_when_caller_loop_unset():
