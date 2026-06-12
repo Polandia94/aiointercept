@@ -38,14 +38,14 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        aiohttp-version: ["3.13.3", "3.14.0"]
+        aiohttp-version: ["3.13.3", "3.14.1"]
         include:
           - os: windows-latest
             python-version: "3.14"
-            aiohttp-version: "3.14.0"
+            aiohttp-version: "3.14.1"
           - os: macos-latest
             python-version: "3.14"
-            aiohttp-version: "3.14.0"
+            aiohttp-version: "3.14.1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
@@ -63,7 +63,9 @@ jobs:
       - name: Pin aiohttp version
         run: uv pip install aiohttp==${{ matrix.aiohttp-version }}
 
+      # --no-sync: a plain `uv run` re-syncs the venv to the lockfile, which
+      # would silently revert the aiohttp pin above.
       - name: Tests
         run: |
-          uv run coverage run -m pytest tests/
-          uv run coverage report --fail-under=99
+          uv run --no-sync coverage run -m pytest tests/
+          uv run --no-sync coverage report --fail-under=99
