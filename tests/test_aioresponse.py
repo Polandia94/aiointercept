@@ -138,7 +138,7 @@ class AIOResponsesTestCase(AsyncTestCase):
         with self.assertRaises(ClientResponseError) as cm:
             response = await self.session.get(self.url)
             response.raise_for_status()
-        self.assertEqual(cm.exception.message, http.RESPONSES[400][0])
+        self.assertEqual(cm.exception.message, HTTPStatus(400).phrase)
 
     @aiointercept(True)
     async def test_request_raise_for_status(self, m):
