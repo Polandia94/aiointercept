@@ -1,0 +1,55 @@
+name: aiohttp main
+
+# Early warning against unreleased aiohttp changes. Runs weekly and on demand.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Install dependencies
+        run: uv sync --group tests
+
+      - name: Check out aiohttp master
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: aio-libs/aiohttp
+          path: aiohttp-src
+          submodules: recursive
+
+      # The git tree ships neither the Cython-generated .c files nor the
+      # generated llhttp sources, so generate them the way aiohttp's own CI
+      # does (npm and make are preinstalled on ubuntu runners) and build the
+      # C extensions instead of falling back to AIOHTTP_NO_EXTENSIONS.
+      - name: Generate llhttp and cythonize
+        working-directory: aiohttp-src
+        run: |
+          make generate-llhttp
+          make cythonize
+
+      - name: Install aiohttp from master
+        run: uv pip install --no-cache ./aiohttp-src
+
+      # --no-sync everywhere below: a plain `uv run` re-syncs the venv to the
+      # lockfile, which would silently replace the master build with the
+      # locked aiohttp release.
+      - name: Verify C extensions are compiled
+        run: uv run --no-sync python -c "import aiohttp._http_parser, aiohttp; print('aiohttp', aiohttp.__version__, '- compiled extensions active')"
+
+      - name: Tests
+        run: uv run --no-sync pytest tests/
