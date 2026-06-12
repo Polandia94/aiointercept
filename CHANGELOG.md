@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-12
+
 ### Fixed
 
 - Allow mock.ANY on JSON, data and headers on asserts.
@@ -22,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added data of AiointerceptRequest class. Thanks to [@eth2353](https://github.com/eth2353).
+- `AiointerceptRequest.kwargs` now includes `data` for non-JSON request bodies. Thanks to [@eth2353](https://github.com/eth2353).
 
 ## [0.1.6] - 2026-06-09
 
