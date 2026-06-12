@@ -3,6 +3,7 @@ import difflib
 import inspect
 import json as json_module
 import logging
+import pprint
 import socket
 import threading
 import typing
@@ -24,6 +25,58 @@ from aiohttp.test_utils import TestServer
 from yarl import URL
 
 from .compat import merge_params, normalize_url
+
+# Bounds for the diff body. ``ndiff`` is O(n²) in time and memory, so we clip
+# both the per-line width (a raw body is a single very long line) and the line
+# count *before* diffing to keep failures fast and readable on large values.
+_MAX_DIFF_LINE_LEN = 200
+_MAX_DIFF_LINES = 60
+
+
+def _pformat(value: Any) -> list[str]:
+    """Pretty-print *value* into a list of lines for diffing.
+
+    ``bytes`` are decoded best-effort so the diff stays human-readable; other
+    objects go through :func:`pprint.pformat` so nested dicts/lists align. Each
+    line is clipped to :data:`_MAX_DIFF_LINE_LEN` so a huge single-line body
+    can't push :func:`difflib.ndiff` into quadratic blow-up.
+    """
+    if isinstance(value, bytes):
+        text = value.decode(errors="replace")
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = pprint.pformat(value, width=88, sort_dicts=True)
+    lines = text.splitlines() or [""]
+    return [
+        line if len(line) <= _MAX_DIFF_LINE_LEN else line[:_MAX_DIFF_LINE_LEN] + " …(line truncated)" for line in lines
+    ]
+
+
+def _oneline(value: Any, limit: int = 120) -> str:
+    """Render *value* on a single line for the assertion's summary line."""
+    text = " ".join("\n".join(_pformat(value)).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _diff(label: str, expected: Any, actual: Any) -> str:
+    """Build an assertion message diffing *expected* vs *actual*.
+
+    The first line is a compact ``expected ... got ...`` summary so it reads well
+    in pytest's one-line failure list; the detailed :func:`difflib.ndiff` follows
+    (``-`` marks expected, ``+`` marks actual, ``?`` points at differing chars).
+    """
+    summary = f"{label}: expected {_oneline(expected)}, got {_oneline(actual)}"
+    expected_lines = _pformat(expected)
+    actual_lines = _pformat(actual)
+    clipped = max(len(expected_lines), len(actual_lines)) > _MAX_DIFF_LINES
+    diff = difflib.ndiff(expected_lines[:_MAX_DIFF_LINES], actual_lines[:_MAX_DIFF_LINES])
+    body = "\n".join(line.rstrip("\n") for line in diff)
+    if not body:
+        body = "(values render identically; check types)"
+    if clipped:
+        body += "\n... (diff truncated; values too large to show in full)"
+    return f"{summary}\n{body}"
 
 
 class AiointerceptRequestKwargs(TypedDict):
@@ -884,6 +937,18 @@ class aiointercept:  # noqa: N801
         if count != 1:
             raise AssertionError(f"Expected exactly 1 call, got {count}.")
 
+    def _no_calls_message(self, method: str, url: URL) -> str:
+        """Build a 'No calls to ...' message, suggesting similar recorded calls."""
+        msg = f"No calls to {method.upper()} {url}"
+        recorded = [f"{m} {u}" for (m, u) in self.requests]
+        if not recorded:
+            return f"{msg}\nNo requests were recorded."
+        target = f"{method.upper()} {url}"
+        similar = difflib.get_close_matches(target, recorded, n=3, cutoff=0)
+        heading = "Did you mean one of"
+        listing = "\n".join(f"  - {s}" for s in similar)
+        return f"{msg}\n{heading}:\n{listing}"
+
     def assert_any_call(
         self,
         url: URL | str,
@@ -894,7 +959,7 @@ class aiointercept:  # noqa: N801
         url = normalize_url(merge_params(url, params))
         key = (method.upper(), url)
         if key not in self.requests:
-            raise AssertionError(f"No calls to {method.upper()} {url}")
+            raise AssertionError(self._no_calls_message(method, url))
 
     def assert_called_with(
         self,
@@ -935,7 +1000,7 @@ class aiointercept:  # noqa: N801
         url = normalize_url(merge_params(url, params))
         key = (method.upper(), url)
         if key not in self.requests:
-            raise AssertionError(f"No calls to {method.upper()} {url}")
+            raise AssertionError(self._no_calls_message(method, url))
         request: AiointerceptRequest = self.requests[key][-1]
         actual_body = request.captured_body
         if json is not None and json is not mock.ANY:
@@ -944,8 +1009,8 @@ class aiointercept:  # noqa: N801
             try:
                 actual_json = json_module.loads(actual_body_str)  # type: ignore[attr-defined]
             except Exception as exc:
-                raise AssertionError(f"Expected JSON body {json!r}, got non-JSON body {actual_body!r}") from exc
-            assert actual_json == json, f"Expected JSON body {json!r}, got {actual_json!r} (raw body {actual_body!r})"
+                raise AssertionError(_diff("Expected JSON body, got non-JSON body", json, actual_body)) from exc
+            assert actual_json == json, _diff("JSON body mismatch", json, actual_json)
         elif data is not None and data is not mock.ANY:
             if not isinstance(data, (str, bytes)):
                 actual_ct = request.headers.get("Content-Type", "")
@@ -957,15 +1022,17 @@ class aiointercept:  # noqa: N801
                     )
                 actual_qs = parse_qs(actual_body.decode(errors="replace"))
                 expected_qs = parse_qs(urlencode(sorted(data.items())))
-                assert actual_qs == expected_qs, f"Expected body {data!r} (form encoded), got {actual_body!r}"
+                assert actual_qs == expected_qs, _diff("Form-encoded body mismatch", expected_qs, actual_qs)
             else:
                 expected_body = data.encode() if isinstance(data, str) else data
-                assert actual_body == expected_body, f"Expected body {expected_body!r}, got {actual_body!r}"
+                assert actual_body == expected_body, _diff("Body mismatch", expected_body, actual_body)
         if strict_headers:
             actual_headers = request.headers.copy()
             actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
-            assert expected_headers == actual_headers, f"Expected headers {expected_headers!r}, got {actual_headers!r}"
+            assert expected_headers == actual_headers, _diff(
+                "Headers mismatch", dict(expected_headers), dict(actual_headers)
+            )
         elif headers and headers is not mock.ANY:
             actual_headers_proxy = request.headers
             for k, v in headers.items():
