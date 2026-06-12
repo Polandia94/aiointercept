@@ -1027,7 +1027,7 @@ class aiointercept:  # noqa: N801
                 expected_body = data.encode() if isinstance(data, str) else data
                 assert actual_body == expected_body, _diff("Body mismatch", expected_body, actual_body)
         if strict_headers:
-            actual_headers = request.headers.copy()
+            actual_headers = dict(request.headers)
             actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
             assert expected_headers == actual_headers, _diff(

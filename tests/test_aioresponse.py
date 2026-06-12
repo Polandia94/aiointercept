@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from aiohttp import hdrs, http
+from http import HTTPStatus
 from aiohttp.client import ClientSession
 from aiohttp.client_reqrep import ClientResponse
 from ddt import data, ddt, unpack  # type: ignore[import-untyped]
@@ -137,14 +138,14 @@ class AIOResponsesTestCase(AsyncTestCase):
         with self.assertRaises(ClientResponseError) as cm:
             response = await self.session.get(self.url)
             response.raise_for_status()
-        self.assertEqual(cm.exception.message, http.RESPONSES[400][0])
+        self.assertEqual(cm.exception.message, HTTPStatus(400).phrase)
 
     @aiointercept(True)
     async def test_request_raise_for_status(self, m):
         m.get(self.url, status=400)
         with self.assertRaises(ClientResponseError) as cm:
             await self.session.get(self.url, raise_for_status=True)
-        self.assertEqual(cm.exception.message, http.RESPONSES[400][0])
+        self.assertEqual(cm.exception.message, HTTPStatus(400).phrase)
 
     @aiointercept(True)
     async def test_returned_instance_and_params_handling(self, m):
@@ -560,7 +561,7 @@ class AIOResponsesRaiseForStatusSessionTestCase(AsyncTestCase):
         m.get(self.url, status=400)
         with self.assertRaises(ClientResponseError) as cm:
             await self.session.get(self.url)
-        self.assertEqual(cm.exception.message, http.RESPONSES[400][0])
+        self.assertEqual(cm.exception.message, HTTPStatus(400).phrase)
 
     @aiointercept(True)
     async def test_do_not_raise_for_status(self, m):
