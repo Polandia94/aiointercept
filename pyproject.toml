@@ -79,8 +79,16 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG"]
 
+[tool.mypy]
+files = ["aiointercept"]
+strict = true
+warn_unreachable = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "network: hits the real internet (deselect locally with -m 'not network')",
+]
 
 [tool.coverage.run]
 source = ["aiointercept"]

@@ -212,6 +212,13 @@ available with ``mock_external_urls=True``.
         m.get("https://mocked.example.com/data", payload={"mocked": True})
         # Any other URL is proxied to the real network.
 
+.. warning::
+
+   Passthrough requests reach the real network with their original headers —
+   including any ``Authorization`` or ``Cookie`` values. With
+   ``passthrough_unmatched=True``, a typo'd URL in a test can silently send
+   real credentials to a real server instead of failing.
+
 
 Inspecting requests
 -------------------

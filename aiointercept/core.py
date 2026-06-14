@@ -18,9 +18,8 @@ from urllib.parse import parse_qs, urlencode
 
 import aiohttp
 from aiohttp import ClientRequest, ClientResponse, hdrs, web
-from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
-from aiohttp.resolver import AsyncResolver, ThreadedResolver
 from aiohttp.test_utils import TestServer
 from yarl import URL
 
@@ -120,67 +119,55 @@ class AiointerceptRequest(web.Request):
         canonical_url: URL,
     ) -> "AiointerceptRequest":
         request.__class__ = cls
-        request.captured_body = captured_body  # type: ignore[attr-defined]
-        request.kwargs = kwargs  # type: ignore[attr-defined]
-        request.canonical_url = canonical_url  # type: ignore[attr-defined]
+        request.captured_body = captured_body
+        request.kwargs = kwargs
+        request.canonical_url = canonical_url
         return cast("AiointerceptRequest", request)
 
 
 logger = logging.getLogger(__name__)
 
 _PROXY_REQ_DROP = frozenset(("host", "transfer-encoding", "x-aiointercept-orig-scheme"))
-_PROXY_RESP_DROP = frozenset(("transfer-encoding", "content-encoding"))
+# content-length must be dropped along with content-encoding: the proxy reads
+# the body decompressed, so the upstream value (compressed size) would truncate
+# the relayed response — aiohttp keeps an explicit Content-Length header as-is.
+_PROXY_RESP_DROP = frozenset(("transfer-encoding", "content-encoding", "content-length"))
 
 # Module-level state for class-level patches shared across concurrent instances.
 # Only the first entering instance installs the patches; the last exiting one removes them.
 _patch_lock = threading.Lock()
 _patch_refcount: int = 0
-_real_threaded_resolve: Any = None
-_real_async_resolve: Any = None
 _real_ssl_context: Any = None
 _real_resolve_host: Any = None
 _real_get: Any = None
 _active_instances: "list[aiointercept]" = []
+# Lock-free snapshot of _active_instances (innermost first), rebuilt on
+# install/remove so the per-connection hot paths (_resolution_target,
+# _shared_ssl_context) never take _patch_lock.
+_active_snapshot: "tuple[aiointercept, ...]" = ()
 
 
-async def _shared_resolve_host(
-    connector_self: "TCPConnector",
-    host: str,
-    port: int,
-    traces: Any = None,
-) -> "list[ResolveResult]":
-    # While mocking is active, never serve a resolution that was cached before
-    # the resolver patch was installed — drop this connector's cached entry so
-    # the lookup always falls through to the patched resolver. This replaces
-    # the need to enumerate every live TCPConnector and clear its DNS cache.
-    # Best-effort: a failing clear must not break resolution.
-    try:
-        connector_self.clear_dns_cache(host, port)
-    except Exception:
-        logger.debug("clear_dns_cache failed for %s:%s", host, port, exc_info=True)
-    return await _real_resolve_host(connector_self, host, port, traces)
+def _refresh_snapshot() -> None:
+    """Rebuild :data:`_active_snapshot`. Callers must hold ``_patch_lock``."""
+    global _active_snapshot
+    _active_snapshot = tuple(reversed(_active_instances))
 
 
-def _make_resolve_result(host: str, inst: "aiointercept", family: "socket.AddressFamily") -> "ResolveResult":
+def _make_resolve_result(host: str, inst: "aiointercept") -> "ResolveResult":
     return ResolveResult(
         hostname=host,
         host=inst.server_host,
         port=inst.server_port,
-        family=family,
+        family=socket.AF_INET,
         proto=0,
         flags=0,
     )
 
 
-def _pick_real_resolver(resolver_self: "AbstractResolver") -> Any:
-    return _real_threaded_resolve if isinstance(resolver_self, ThreadedResolver) else _real_async_resolve
-
-
 def _resolution_target(host: str) -> "aiointercept | None":
     """Return the mock instance whose server should serve ``host``, or ``None``
     if the host should be resolved for real (passthrough, or no active mock)."""
-    with _patch_lock:
-        instances = list(reversed(_active_instances))
+    instances = _active_snapshot
 
     for inst in instances:
         if host in inst._host_list or inst._patterns_list:
@@ -195,31 +182,45 @@ def _resolution_target(host: str) -> "aiointercept | None":
     return instances[0] if instances else None
 
 
-async def _shared_resolve(
-    resolver_self: "AbstractResolver",
+async def _shared_resolve_host(
+    connector_self: "TCPConnector",
     host: str,
-    port: int = 0,
-    family: "socket.AddressFamily" = socket.AF_INET,
+    port: int,
+    traces: Any = None,
 ) -> "list[ResolveResult]":
+    # Single funnel for every connection's name resolution: intercepting here
+    # covers ThreadedResolver, AsyncResolver, and any custom resolver, and it
+    # sits *before* the connector's DNS cache — so a resolution cached before
+    # the mock started can never leak a mocked host to the real network, while
+    # passthrough hosts keep normal DNS caching.
     inst = _resolution_target(host)
     if inst is not None:
-        return [_make_resolve_result(host, inst, family)]
-    return await _pick_real_resolver(resolver_self)(resolver_self, host, port, family)
+        return [_make_resolve_result(host, inst)]
+    return cast("list[ResolveResult]", await _real_resolve_host(connector_self, host, port, traces))
 
 
 async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> Any:
-    # A pooled keep-alive connection to the real server bypasses DNS resolution
-    # entirely, so it would leak past the mock. For any host a mock would
-    # intercept, refuse to reuse a pooled connection — forcing aiohttp to open a
-    # fresh one, which then routes through the patched resolver to the mock.
-    if _resolution_target(key.host) is not None:
+    # A pooled keep-alive connection that does not point at the mock's server
+    # bypasses DNS resolution entirely, so it would leak past the mock. For an
+    # intercepted host, reuse a pooled connection only when it is already
+    # connected to that mock's server; otherwise close it so aiohttp opens a
+    # fresh connection, which then routes through patched resolution.
+    inst = _resolution_target(key.host)
+    if inst is None:
+        return await _real_get(connector_self, key, traces)
+    conn = await _real_get(connector_self, key, traces)
+    if conn is None:
         return None
-    return await _real_get(connector_self, key, traces)
+    transport = conn.transport
+    peer = transport.get_extra_info("peername") if transport is not None else None
+    if peer is not None and peer[0] == inst.server_host and peer[1] == inst.server_port:
+        return conn
+    conn.close()
+    return None
 
 
 def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") -> "SSLContext | None":
-    with _patch_lock:
-        instances = list(reversed(_active_instances))
+    instances = _active_snapshot
 
     host = req.url.raw_host
     url_str = str(req.url)
@@ -236,24 +237,20 @@ def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") ->
                 req.headers["X-Aiointercept-Orig-Scheme"] = "https"
             return None
 
-    return _real_ssl_context(connector_self, req)  # type: ignore[misc]
+    return cast("SSLContext | None", _real_ssl_context(connector_self, req))
 
 
 def _install_patches(inst: "aiointercept") -> None:
-    """Register ``inst`` and, on the first active instance, patch the resolver,
-    SSL context, host resolution, and connection reuse at the class level."""
-    global _patch_refcount, _real_threaded_resolve, _real_async_resolve, _real_ssl_context
-    global _real_resolve_host, _real_get
+    """Register ``inst`` and, on the first active instance, patch host
+    resolution, SSL context, and connection reuse at the class level."""
+    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
         _active_instances.append(inst)
+        _refresh_snapshot()
         if _patch_refcount == 0:
-            _real_threaded_resolve = ThreadedResolver.resolve
-            _real_async_resolve = AsyncResolver.resolve
             _real_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
             _real_resolve_host = TCPConnector._resolve_host  # pyright: ignore[reportPrivateUsage]
             _real_get = TCPConnector._get  # pyright: ignore[reportPrivateUsage]
-            ThreadedResolver.resolve = _shared_resolve  # type: ignore[assignment]
-            AsyncResolver.resolve = _shared_resolve  # type: ignore[assignment]
             TCPConnector._get_ssl_context = _shared_ssl_context  # type: ignore[assignment]
             TCPConnector._resolve_host = _shared_resolve_host  # type: ignore[assignment]
             TCPConnector._get = _shared_get  # type: ignore[assignment]
@@ -262,23 +259,20 @@ def _install_patches(inst: "aiointercept") -> None:
 
 def _remove_patches(inst: "aiointercept") -> None:
     """Deregister ``inst`` and, once the last active instance is gone, restore
-    the original resolver, SSL context, and host resolution. Idempotent: a no-op
-    if ``inst`` was never registered (e.g. ``start()`` failed before patching)."""
-    global _patch_refcount, _real_threaded_resolve, _real_async_resolve, _real_ssl_context
-    global _real_resolve_host, _real_get
+    the original host resolution, SSL context, and connection reuse. Idempotent:
+    a no-op if ``inst`` was never registered (e.g. ``start()`` failed before
+    patching)."""
+    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
         if inst not in _active_instances:
             return
         _active_instances.remove(inst)
+        _refresh_snapshot()
         _patch_refcount -= 1
         if _patch_refcount == 0:
-            ThreadedResolver.resolve = _real_threaded_resolve  # type: ignore[method-assign]
-            AsyncResolver.resolve = _real_async_resolve  # type: ignore[method-assign]
-            TCPConnector._get_ssl_context = _real_ssl_context  # type: ignore[method-assign,reportPrivateUsage]
-            TCPConnector._resolve_host = _real_resolve_host  # type: ignore[method-assign,reportPrivateUsage]
-            TCPConnector._get = _real_get  # type: ignore[method-assign,reportPrivateUsage]
-            _real_threaded_resolve = None
-            _real_async_resolve = None
+            TCPConnector._get_ssl_context = _real_ssl_context  # type: ignore[method-assign]
+            TCPConnector._resolve_host = _real_resolve_host  # type: ignore[method-assign]
+            TCPConnector._get = _real_get  # type: ignore[method-assign]
             _real_ssl_context = None
             _real_resolve_host = None
             _real_get = None
@@ -382,6 +376,12 @@ class aiointercept:  # noqa: N801
             passthrough_unmatched: When ``True``, proxy every unmatched request
                 to the real network instead of failing it. Requires
                 ``mock_external_urls=True``.
+
+                .. warning::
+                    Proxied requests carry their original headers — including
+                    any ``Authorization`` or ``Cookie`` values — so a typo'd
+                    URL in a test can silently send real credentials to the
+                    real network.
             param: Keyword-argument name under which the mock is injected when
                 the instance is used as a decorator. Defaults to appending it as
                 the last positional argument.
@@ -460,16 +460,8 @@ class aiointercept:  # noqa: N801
         try:
             if self._mock_external_urls:
                 _install_patches(self)
-
-                # ClientSession binds to the running loop at construction time,
-                # so build it on the server loop (where _dispatch will use it).
-                async def _create_bypass() -> None:
-                    self._bypass_session = self._make_bypass_session()
-
-                await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_create_bypass(), self._server_loop))
         except BaseException:
-            if self._mock_external_urls:
-                _remove_patches(self)
+            _remove_patches(self)
             await self._stop_server_thread()
             raise
 
@@ -541,8 +533,11 @@ class aiointercept:  # noqa: N801
         self._server_thread = threading.Thread(target=_run_server_thread, name="aiointercept-server", daemon=True)
         self._server_thread.start()
         # ready.wait runs on the caller's loop thread; the server thread sets
-        # the event quickly so a brief blocking wait here is acceptable.
-        ready.wait()
+        # the event quickly so a brief blocking wait here is acceptable. The
+        # timeout keeps a wedged server thread from blocking the caller's loop
+        # forever.
+        if not ready.wait(timeout=30):  # pragma: no cover - requires a wedged thread
+            raise RuntimeError("aiointercept server thread failed to start within 30 seconds")
         if startup_error:
             self._server_thread.join()
             self._server_thread = None
@@ -588,23 +583,26 @@ class aiointercept:  # noqa: N801
         return wrapper
 
     def _make_bypass_session(self) -> aiohttp.ClientSession:
-        _orig_resolve = _real_threaded_resolve
+        _orig_resolve_host = _real_resolve_host
         _orig_ssl_ctx = _real_ssl_context
-
-        class _BypassResolver(ThreadedResolver):
-            async def resolve(
-                self,
-                host: str,
-                port: int = 0,
-                family: socket.AddressFamily = socket.AF_INET,
-            ) -> list[ResolveResult]:
-                return await _orig_resolve(self, host, port, family)
+        _orig_get = _real_get
 
         class _BypassConnector(aiohttp.TCPConnector):
-            def _get_ssl_context(self, req: ClientRequest) -> SSLContext | None:
-                return _orig_ssl_ctx(self, req)  # pyright: ignore[reportPrivateUsage]
+            """Connector wired to the saved originals so proxied requests
+            resolve, pool, and encrypt against the real network."""
 
-        return aiohttp.ClientSession(connector=_BypassConnector(resolver=_BypassResolver()))
+            async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
+                return await _orig_resolve_host(self, host, port, traces)  # type: ignore[no-any-return]
+
+            def _get_ssl_context(self, req: ClientRequest) -> SSLContext | None:
+                return _orig_ssl_ctx(self, req)  # type: ignore[no-any-return] # pyright: ignore[reportPrivateUsage]
+
+            async def _get(self, key: Any, traces: Any) -> Any:
+                return await _orig_get(self, key, traces)
+
+        # DummyCookieJar: the proxy must not accumulate Set-Cookie state across
+        # proxied requests — cookie handling belongs to each test's own client.
+        return aiohttp.ClientSession(connector=_BypassConnector(), cookie_jar=aiohttp.DummyCookieJar())
 
     def _match_pattern(self, url: str) -> bool:
         return any(p.match(url) for p in self._patterns_list)
@@ -663,7 +661,7 @@ class aiointercept:  # noqa: N801
             if not selected_handler:
                 handler: handler_type | None = None
             else:
-                handler = typing.cast("handler_type", selected_handler.pop(0))
+                handler = selected_handler.pop(0)
 
         else:
             handler = selected_handler
@@ -691,13 +689,20 @@ class aiointercept:  # noqa: N801
                 scheme = request.headers.get("X-Aiointercept-Orig-Scheme") or ("https" if request.secure else "http")
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
                 session = self._bypass_session
-                assert session is not None, "Bypass session not initialized"
+                if session is None:
+                    # Created lazily on first passthrough use. _dispatch runs on
+                    # the server loop, which is the loop the session must bind
+                    # to, and there is no await between check and assignment.
+                    session = self._bypass_session = self._make_bypass_session()
                 async with session.request(
                     method=request.method,
                     url=real_url,
                     headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
                     data=getattr(request, "captured_body", None) or None,
-                    allow_redirects=True,
+                    # Relay redirects untouched so the *client's* redirect
+                    # handling (allow_redirects, history) behaves as it would
+                    # against the real network.
+                    allow_redirects=False,
                     ssl=True,
                 ) as real_resp:
                     body = await real_resp.read()
@@ -768,13 +773,16 @@ class aiointercept:  # noqa: N801
         if isinstance(url, str):
             url = URL(url)
 
+        if self.server is None:
+            raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
+
         if isinstance(url, Pattern):
             self._patterns_list.append(url)
 
-        assert self.server is not None, "Server not started — use `async with aiointercept() as m:` first."
         if isinstance(url, URL):
             host = url.host
-            assert host, f"Cannot extract host from {url!r}"
+            if not host:
+                raise ValueError(f"Cannot extract host from {url!r}")
 
             # Map this host → our test server
             self._host_list.add(host)
@@ -860,7 +868,6 @@ class aiointercept:  # noqa: N801
                 if (url, method) in self.patterns_handler:
                     list_pattern_handler = self.patterns_handler[(url, method)]
                     if isinstance(list_pattern_handler, list):
-                        list_pattern_handler = typing.cast("list[handler_type]", list_pattern_handler)
                         list_pattern_handler += handlers
                     else:
                         raise ValueError(
@@ -875,7 +882,6 @@ class aiointercept:  # noqa: N801
             if (handler_url, method) in self.handlers:
                 handlers_list = self.handlers[(handler_url, method)]
                 if isinstance(handlers_list, list):
-                    handlers_list = typing.cast("list[handler_type]", handlers_list)
                     handlers_list += handlers
                 else:
                     raise ValueError(
@@ -1007,7 +1013,7 @@ class aiointercept:  # noqa: N801
             # aiohttp sends json= as JSON-encoded bytes with application/json
             actual_body_str = actual_body.decode(errors="replace")
             try:
-                actual_json = json_module.loads(actual_body_str)  # type: ignore[attr-defined]
+                actual_json = json_module.loads(actual_body_str)
             except Exception as exc:
                 raise AssertionError(_diff("Expected JSON body, got non-JSON body", json, actual_body)) from exc
             assert actual_json == json, _diff("JSON body mismatch", json, actual_json)
