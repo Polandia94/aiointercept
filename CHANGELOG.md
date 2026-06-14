@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `passthrough_unmatched` proxying no longer truncates compressed upstream responses: the upstream `Content-Length` (the compressed size) was relayed alongside the already-decompressed body.
+- Proxied redirects are now relayed untouched (`allow_redirects=False` upstream), so the client's own redirect handling (`allow_redirects`, `response.history`) behaves as it would against the real network. Previously the proxy followed redirects itself and the client saw only the final response.
+- The internal proxy session no longer accumulates cookies across proxied requests (it now uses a `DummyCookieJar`); cookie state belongs to each test's own client.
+- Custom resolvers passed to `TCPConnector(resolver=...)` are now intercepted too. Resolution is funneled through a single `TCPConnector._resolve_host` patch instead of patching `ThreadedResolver.resolve` / `AsyncResolver.resolve`, which only covered those two classes.
+- Calling `add()` before the server is started now raises `RuntimeError` (was `AssertionError`, which disappears under `python -O`); a URL without a host raises `ValueError`.
+- `start()` now fails with a clear `RuntimeError` instead of blocking the caller's event loop forever if the server thread wedges during startup.
+
+### Improved
+
+- Sequential requests to a mocked host are faster: pooled keep-alive connections that already point at the mock server are reused instead of forcing a fresh TCP connection per request (connections pointing elsewhere are still discarded).
+- Mock startup is faster: the passthrough proxy session is created lazily on first use instead of eagerly on every `start()`.
+- `mock_external_urls=True` now installs 3 class-level patches instead of 5 (`TCPConnector._resolve_host` / `_get_ssl_context` / `_get`), and passthrough hosts keep normal DNS caching (the per-lookup cache clearing is gone — interception happens before the cache).
+
 ## [0.1.7] - 2026-06-12
 
 ### Fixed

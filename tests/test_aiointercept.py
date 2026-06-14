@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import logging
 import re
+import socket
 import threading
 from random import uniform
 from unittest import mock
@@ -11,12 +12,21 @@ from unittest import mock
 import aiohttp
 import pytest
 from aiohttp import ClientSession
+from aiohttp.abc import AbstractResolver
 from aiohttp.client_exceptions import ClientConnectionError
-from aiohttp.resolver import AsyncResolver, ThreadedResolver
+from aiohttp.connector import TCPConnector
+from aiohttp.test_utils import TestServer
 from yarl import URL
 
 from aiointercept import CallbackResult, aiointercept
-from tests.conftest import network_retry
+from tests.conftest import GZIP_PAYLOAD, network_retry
+
+
+def upstream_base(server: TestServer) -> str:
+    """Base URL of the local upstream using ``localhost`` so requests go
+    through real DNS resolution (and its cache), like an external host."""
+    return f"http://localhost:{server.port}"
+
 
 # ---------------------------------------------------------------------------
 # Basic mock_external_urls=True (DNS patched) vs False (direct to server)
@@ -309,17 +319,17 @@ async def test_callback_with_payload():
 # ---------------------------------------------------------------------------
 
 
-@network_retry
-async def test_passthrough_host_is_allowed():
-    """Passthrough host resolves normally (hits real network)."""
+async def test_passthrough_host_is_allowed(real_upstream: TestServer):
+    """Passthrough host resolves normally and reaches the (local) real server."""
+    upstream_url = f"{upstream_base(real_upstream)}/status/200"
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=["http://httpbingo.org/status/200"]) as m,
+        aiointercept(mock_external_urls=True, passthrough=[upstream_url]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
         assert mocked.status == 200
-        real = await session.get("http://httpbingo.org/status/200")
+        real = await session.get(upstream_url)
         assert real.status == 200
 
 
@@ -329,14 +339,13 @@ async def test_passthrough_host_is_allowed():
 # ---------------------------------------------------------------------------
 
 
-@network_retry
-async def test_real_request_then_mock_same_host_ignores_stale_dns():
+async def test_real_request_then_mock_same_host_ignores_stale_dns(real_upstream: TestServer):
     """A real request leaves a live keep-alive connection (and DNS cache entry)
     for the host; once the mock is active, a request to the same host is served
     by the mock, not reused against the real server."""
-    url = "http://httpbingo.org/status/200"
+    url = f"{upstream_base(real_upstream)}/status/200"
     async with ClientSession() as session:
-        # Real request: resolves httpbingo.org, caches its address, and leaves a
+        # Real request: resolves localhost, caches its address, and leaves a
         # keep-alive connection to the real server in the pool.
         real = await session.get(url)
         assert real.status == 200
@@ -361,14 +370,13 @@ async def test_registered_host_missing_path_raises():
 # ---------------------------------------------------------------------------
 
 
-@network_retry
-async def test_passthrough_unmatched_allows_real_requests():
+async def test_passthrough_unmatched_allows_real_requests(real_upstream: TestServer):
     """Requests without a registered handler pass through to the network."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
         m.get("http://example.com/mocked", status=200, body=b"mocked")
         mocked = await session.get("http://example.com/mocked")
         assert mocked.status == 200
-        real = await session.get("http://httpbingo.org/status/201")
+        real = await session.get(f"{upstream_base(real_upstream)}/status/201")
         assert real.status == 201
 
 
@@ -380,13 +388,12 @@ async def test_passthrough_unmatched_false_raises_for_unknown():
             await session.get("http://unregistered.test/foo")
 
 
-@network_retry
-async def test_passthrough_unmatched_with_pattern_proxies_unmatched():
+async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstream: TestServer):
     """
     With a pattern registered, DNS redirects ALL hosts to the test server.
-    Unmatched requests fall into _dispatch's passthrough branch, which now
-    uses a _BypassResolver so the inner connector calls real DNS instead of
-    looping back to the test server.
+    Unmatched requests fall into _dispatch's passthrough branch, whose bypass
+    connector uses the original (unpatched) resolution instead of looping back
+    to the test server.
     """
     pattern = re.compile(r"^http://pat\.test/specific$")
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
@@ -395,7 +402,7 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched():
         resp_mocked = await session.get("http://pat.test/specific")
         assert resp_mocked.status == 200
         # Unmatched: proxied via real DNS to the actual server
-        resp_real = await session.get("http://httpbingo.org/status/201")
+        resp_real = await session.get(f"{upstream_base(real_upstream)}/status/201")
         assert resp_real.status == 201
 
 
@@ -465,10 +472,17 @@ async def test_unmatched_logs_closest_url_hint(caplog):
 
 
 async def test_add_without_server_raises():
-    """Calling add() before entering the context manager (no server) raises AssertionError."""
+    """Calling add() before entering the context manager (no server) raises RuntimeError."""
     m = aiointercept(mock_external_urls=True)
-    with pytest.raises(AssertionError):
+    with pytest.raises(RuntimeError, match="Server not started"):
         m.add("http://example.com/", method="GET", status=200)
+
+
+async def test_add_url_without_host_raises():
+    """A URL with no extractable host raises ValueError."""
+    async with aiointercept() as m:
+        with pytest.raises(ValueError, match="Cannot extract host"):
+            m.add("/relative/path", status=200)
 
 
 # ---------------------------------------------------------------------------
@@ -834,25 +848,29 @@ def test_passthrough_invalid_url_fallback():
 
 
 # ---------------------------------------------------------------------------
-# _shared_resolve_host swallows clear_dns_cache failures
+# Custom resolvers are intercepted too (resolution is funneled through
+# TCPConnector._resolve_host, not the resolver classes)
 # ---------------------------------------------------------------------------
 
 
-async def test_resolve_host_clear_cache_exception_swallowed():
-    """If a connector's clear_dns_cache() raises during resolution, the failure
-    is swallowed and the request still resolves through the patched resolver."""
-    connector = aiohttp.TCPConnector()
+async def test_custom_resolver_intercepted():
+    """A user-supplied resolver must not bypass interception: for a mocked
+    host, resolution short-circuits before the resolver is ever consulted."""
 
-    def raising_clear(*args, **kwargs):
-        raise RuntimeError("simulated dns cache error")
+    class ExplodingResolver(AbstractResolver):
+        async def resolve(self, host, port=0, family=socket.AF_INET):
+            raise AssertionError("custom resolver must not be consulted for mocked hosts")
 
-    connector.clear_dns_cache = raising_clear  # type: ignore[method-assign]
-    session = ClientSession(connector=connector)
+        async def close(self):
+            pass
+
+    connector = aiohttp.TCPConnector(resolver=ExplodingResolver())
     async with aiointercept(mock_external_urls=True) as m:
-        m.get("http://clearcache.test/", status=200)
-        resp = await session.get("http://clearcache.test/")
-        assert resp.status == 200
-    await session.close()
+        m.get("http://custom-resolver.test/", status=200, body=b"ok")
+        async with ClientSession(connector=connector) as session:
+            resp = await session.get("http://custom-resolver.test/")
+            assert resp.status == 200
+            assert await resp.read() == b"ok"
 
 
 # ---------------------------------------------------------------------------
@@ -966,6 +984,7 @@ async def test_mock_https_url():
         assert await resp.read() == b"secret"
 
 
+@pytest.mark.network
 @network_retry
 async def test_passthrough_https_explicit():
     """An https:// URL in the passthrough list reaches the real server with TLS."""
@@ -980,6 +999,7 @@ async def test_passthrough_https_explicit():
         assert real.status == 201
 
 
+@pytest.mark.network
 @network_retry
 async def test_passthrough_unmatched_https_no_patterns():
     """With passthrough_unmatched=True and no patterns, HTTPS goes via real DNS directly."""
@@ -991,6 +1011,7 @@ async def test_passthrough_unmatched_https_no_patterns():
         assert real.status == 200
 
 
+@pytest.mark.network
 @network_retry
 async def test_passthrough_unmatched_https_with_patterns():
     """With patterns active (all DNS redirected), HTTPS passthrough still works.
@@ -1008,10 +1029,11 @@ async def test_passthrough_unmatched_https_with_patterns():
 
 async def test_nested_mock_external_urls_instances():
     """Two nested mock_external_urls=True instances each intercept their own host,
-    and the class-level resolver is fully restored after both exit."""
+    and the class-level patches are fully restored after both exit."""
 
-    real_threaded = ThreadedResolver.resolve
-    real_async = AsyncResolver.resolve
+    real_resolve_host = TCPConnector._resolve_host
+    real_ssl_context = TCPConnector._get_ssl_context
+    real_get = TCPConnector._get
 
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as outer:
         outer.get("http://outer.test/", status=200, body=b"outer", repeat=True)
@@ -1031,8 +1053,9 @@ async def test_nested_mock_external_urls_instances():
         assert resp_outer2.status == 200
 
     # After both exit, class-level methods are fully restored
-    assert ThreadedResolver.resolve is real_threaded
-    assert AsyncResolver.resolve is real_async
+    assert TCPConnector._resolve_host is real_resolve_host
+    assert TCPConnector._get_ssl_context is real_ssl_context
+    assert TCPConnector._get is real_get
 
 
 async def test_https_request_recorded_under_https_scheme():
@@ -1429,17 +1452,17 @@ async def test_clear_then_readd_https_works_over_keepalive():
 # ---------------------------------------------------------------------------
 
 
-@network_retry
-async def test_passthrough_unmatched_url_handler_unknown_path_proxied():
+async def test_passthrough_unmatched_url_handler_unknown_path_proxied(real_upstream: TestServer):
     """With URL-based (non-pattern) handlers and passthrough_unmatched=True, an
     unregistered path on a registered host is proxied to the real server, not
     closed with ClientConnectionError."""
+    base = upstream_base(real_upstream)
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
-        m.get("http://httpbingo.org/status/200", status=418)
-        mocked = await session.get("http://httpbingo.org/status/200")
+        m.get(f"{base}/status/200", status=418)
+        mocked = await session.get(f"{base}/status/200")
         assert mocked.status == 418
-        # Same host, different path — should proxy to real httpbin, not close.
-        real = await session.get("http://httpbingo.org/status/201")
+        # Same host, different path — should proxy to the real upstream, not close.
+        real = await session.get(f"{base}/status/201")
         assert real.status == 201
 
 
@@ -1528,21 +1551,26 @@ async def test_async_callback_runs_on_server_loop_when_caller_loop_unset():
             assert await resp.read() == b"server-loop"
 
 
-async def test_shared_resolve_no_active_instances_uses_real_resolver():
-    """With patches installed but no active instances, _shared_resolve calls the real resolver."""
+async def test_shared_resolve_host_no_active_instances_uses_real_resolution():
+    """With patches installed but no active instances, _shared_resolve_host
+    falls through to the real implementation."""
     from aiointercept import core as ai_core
 
     async with aiointercept(mock_external_urls=True) as m:
         with ai_core._patch_lock:
             ai_core._active_instances.remove(m)
+            ai_core._refresh_snapshot()
+        connector = aiohttp.TCPConnector()
         try:
-            resolver = ThreadedResolver()
-            results = await ai_core._shared_resolve(resolver, "localhost", 0)
+            results = await connector._resolve_host("localhost", 80)
             assert isinstance(results, list)
             assert len(results) >= 1
+            assert results[0]["port"] == 80
         finally:
+            await connector.close()
             with ai_core._patch_lock:
                 ai_core._active_instances.append(m)
+                ai_core._refresh_snapshot()
 
 
 async def test_pending_tasks_cancelled_on_shutdown():
@@ -1579,8 +1607,6 @@ async def test_server_thread_startup_failure_propagates():
 async def test_aenter_failure_after_server_start_cleans_up():
     """If __aenter__ fails after the server starts, the server thread is stopped
     and the class-level patches are rolled back (no leaked refcount/state)."""
-    from aiohttp.connector import TCPConnector
-
     from aiointercept import core as ai_core
 
     refcount_before = ai_core._patch_refcount
@@ -1588,12 +1614,10 @@ async def test_aenter_failure_after_server_start_cleans_up():
 
     m = aiointercept(mock_external_urls=True)
 
-    def bad(*args, **kwargs):
-        raise RuntimeError("bypass failed")
-
-    m._make_bypass_session = bad  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError, match="bypass failed"):
+    with (
+        mock.patch.object(ai_core, "_install_patches", side_effect=RuntimeError("patch install failed")),
+        pytest.raises(RuntimeError, match="patch install failed"),
+    ):
         await m.__aenter__()
 
     # start() rolls its own patch state back on failure.
@@ -1602,3 +1626,59 @@ async def test_aenter_failure_after_server_start_cleans_up():
     assert m not in ai_core._active_instances
     assert ai_core._patch_refcount == refcount_before
     assert TCPConnector._resolve_host is resolve_host_before
+
+
+# ---------------------------------------------------------------------------
+# Proxy fidelity: compressed bodies, redirects, and cookie isolation
+# ---------------------------------------------------------------------------
+
+
+async def test_passthrough_proxied_gzip_body_not_truncated(real_upstream: TestServer):
+    """Regression: the proxy reads the upstream body decompressed, so it must
+    not relay the upstream Content-Length (the *compressed* size) — aiohttp
+    keeps an explicit Content-Length header as-is, truncating the response."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        # Claims the host so /gzip is routed to the mock server and proxied.
+        m.get(f"{base}/never-called", status=200)
+        resp = await session.get(f"{base}/gzip")
+        assert resp.status == 200
+        assert await resp.json() == GZIP_PAYLOAD
+
+
+async def test_passthrough_proxied_redirect_followed_by_client(real_upstream: TestServer):
+    """Regression: the proxy must relay 3xx responses untouched so the client's
+    own redirect handling (allow_redirects, history) works as it would against
+    the real network — instead of the proxy silently following them."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(f"{base}/never-called", status=200)
+        resp = await session.get(f"{base}/redirect")
+        assert resp.status == 200
+        assert len(resp.history) == 1  # the client saw and followed the 302 itself
+
+
+async def test_passthrough_proxied_redirect_not_followed_when_disabled(real_upstream: TestServer):
+    """With allow_redirects=False on the client, a proxied 302 must reach the
+    client as a 302, not as the followed-through final response."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(f"{base}/never-called", status=200)
+        resp = await session.get(f"{base}/redirect", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"].endswith("/status/200")
+
+
+async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestServer):
+    """The proxy must not replay cookies set by one upstream response onto
+    later proxied requests — cookie state belongs to the test's own client."""
+    base = upstream_base(real_upstream)
+    async with aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(f"{base}/never-called", status=200)
+        # A cookie-less client: any Cookie header reaching upstream could only
+        # have been added by the bypass session.
+        async with ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+            first = await session.get(f"{base}/cookies")
+            assert (await first.json())["cookie_header"] is None
+            second = await session.get(f"{base}/cookies")
+            assert (await second.json())["cookie_header"] is None

@@ -10,6 +10,9 @@ repos:
     rev: v1.15.0
     hooks:
       - id: mypy
+        files: ^aiointercept/
         additional_dependencies:
           - aiohttp
           - yarl
+          - multidict
+          - pytest_asyncio
