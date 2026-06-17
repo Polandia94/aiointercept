@@ -5,6 +5,15 @@ on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+    inputs:
+      aiohttp_ref:
+        description: "aiohttp branch / tag / commit to test against"
+        default: "main"
+        required: false
+      aiointercept_ref:
+        description: "aiointercept branch / tag / commit to check out (leave blank for default branch)"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -14,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.aiointercept_ref || github.ref }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
@@ -25,10 +36,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group tests
 
-      - name: Check out aiohttp master
+      - name: Check out aiohttp ${{ inputs.aiohttp_ref || 'main' }}
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: aio-libs/aiohttp
+          ref: ${{ inputs.aiohttp_ref || 'main' }}
           path: aiohttp-src
           submodules: recursive
 
