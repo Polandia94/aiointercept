@@ -13,6 +13,13 @@ The mock
    :undoc-members:
    :member-order: bysource
 
+Registered mocks
+----------------
+
+.. autoclass:: aiointercept.MockResponse
+   :members:
+   :undoc-members:
+
 Callbacks
 ---------
 

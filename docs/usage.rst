@@ -231,7 +231,7 @@ All intercepted requests are stored in ``m.requests``, keyed by
     from yarl import URL
 
     key = ("POST", URL("https://api.example.com/orders"))
-    req = m.requests[key][-1]   # most recent request
+    req = m.requests[key][-1]   # most recent request to this URL
 
     req.captured_body            # raw bytes body
     req.kwargs["json"]           # parsed JSON body (or None)
@@ -239,6 +239,42 @@ All intercepted requests are stored in ``m.requests``, keyed by
     req.kwargs["headers"]        # raw request headers (multidict)
 
 URLs are normalized: fragments are stripped and query parameters are sorted.
+
+For cross-URL ordering, ``m.ordered_requests`` is a flat list of
+``(key, request)`` tuples in the order they arrived:
+
+.. code-block:: python
+
+    # Iterate all requests in arrival order:
+    for (method, url), req in m.ordered_requests:
+        print(method, url, req.kwargs["json"])
+
+    # Quick helpers built on top of ordered_requests:
+    m.call_count    # int — total requests across all URLs
+    m.last_request  # AiointerceptRequest | None — the most recent request
+
+Per-handler call counts
+-----------------------
+
+Every registration call (``m.add``, ``m.get``, ``m.post``, etc.) returns a
+:class:`~aiointercept.MockResponse` whose ``call_count`` attribute increments
+each time that specific mock is matched:
+
+.. code-block:: python
+
+    rsp = m.get("https://api.example.com/items", payload=[])
+    rsp2 = m.post("https://api.example.com/items", status=201)
+
+    await session.get("https://api.example.com/items")
+    await session.get("https://api.example.com/items")
+    await session.post("https://api.example.com/items", json={"name": "foo"})
+
+    assert rsp.call_count == 2
+    assert rsp2.call_count == 1
+
+With ``repeat=N``, all N slots share the same :class:`~aiointercept.MockResponse`
+object, so ``call_count`` correctly accumulates across every matching request
+regardless of how many slots remain.
 
 
 Constructor parameters

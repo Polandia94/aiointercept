@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `m.ordered_requests` — flat list of `(key, AiointerceptRequest)` tuples in arrival order, giving cross-URL request ordering that `m.requests` (grouped by key) does not provide.
+- `m.call_count` — integer property; total requests intercepted across all URLs (`len(m.ordered_requests)`).
+- `MockResponse` — object returned by `m.add()` / `m.get()` / `m.post()` etc. Its `call_count` attribute increments each time that specific registration is matched and served, enabling per-handler assertions: `rsp = m.get(url); ...; assert rsp.call_count == 2`.
+- `m.last_request` — property returning the most recently intercepted `AiointerceptRequest`, or `None` if no requests have been made.
+
 ### Fixed
 
+- `start()` now clears `m.requests` and `m.ordered_requests` at the beginning of each session. Previously, reusing the same instance across multiple invocations (decorator mode or manual `start()`/`stop()` cycles) accumulated requests from prior runs, causing `assert_called_once()` and `assert_not_called()` to report stale counts. Recorded requests remain accessible after `stop()` for post-context-manager inspection.
 - `passthrough_unmatched` proxying no longer truncates compressed upstream responses: the upstream `Content-Length` (the compressed size) was relayed alongside the already-decompressed body.
 - Proxied redirects are now relayed untouched (`allow_redirects=False` upstream), so the client's own redirect handling (`allow_redirects`, `response.history`) behaves as it would against the real network. Previously the proxy followed redirects itself and the client saw only the final response.
 - The internal proxy session no longer accumulates cookies across proxied requests (it now uses a `DummyCookieJar`); cookie state belongs to each test's own client.
