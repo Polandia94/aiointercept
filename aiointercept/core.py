@@ -8,7 +8,7 @@ import socket
 import threading
 import typing
 import warnings
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
 from re import Pattern
@@ -284,7 +284,8 @@ class CallbackResult:
     Args:
         method: HTTP method (default GET; not used by the server handler).
         status: HTTP response status code.
-        body: Raw response body as str or bytes.
+        body: Raw response body as str or bytes, or an ``AsyncIterable[bytes]``
+            to stream the response chunked (see ``aiointercept.add``).
         content_type: ``Content-Type`` header value. Set to ``None`` when
             *headers* already carries a ``Content-Type`` entry, to avoid
             colliding with it.
@@ -298,7 +299,7 @@ class CallbackResult:
         self,
         method: str = hdrs.METH_GET,
         status: int = 200,
-        body: str | bytes = "",
+        body: str | bytes | AsyncIterable[bytes] = "",
         content_type: str = "application/json",
         payload: Any = None,
         headers: Mapping[str, str] | None = None,
@@ -754,7 +755,7 @@ class aiointercept:  # noqa: N801
         url: URL | str | Pattern[str],
         method: str = hdrs.METH_GET,
         status: int = 200,
-        body: str | bytes = b"",
+        body: str | bytes | AsyncIterable[bytes] = b"",
         json: Any = None,
         payload: Any = None,
         headers: Mapping[str, str] | None = None,
@@ -772,6 +773,13 @@ class aiointercept:  # noqa: N801
             method: HTTP method (case-insensitive, default ``GET``).
             status: Response status code.
             body: Raw response body (str is UTF-8 encoded; default empty bytes).
+                An ``AsyncIterable[bytes]`` (e.g. an async generator) is passed
+                straight through to :class:`aiohttp.web.Response`, which wraps it
+                in an ``AsyncIterablePayload`` and streams the chunks with chunked
+                transfer encoding — the client receives each piece as it is
+                written. The iterator is drained once: with ``repeat`` only the
+                first response carries the body and later ones come back empty,
+                so register a fresh iterator per expected request.
             json: Response body as a JSON-serialisable object (overrides *body*).
             payload: Alias for *json*.
             headers: Additional response headers.
@@ -864,6 +872,9 @@ class aiointercept:  # noqa: N801
                 _content_type = content_type
                 _reason = reason
 
+            # ``_body`` may be bytes/str or an AsyncIterable[bytes]; in the
+            # latter case web.Response wraps it in an AsyncIterablePayload and
+            # streams it chunked, so we don't special-case streaming here.
             return web.Response(
                 status=_status,
                 body=_body,

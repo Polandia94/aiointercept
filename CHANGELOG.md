@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `m.call_count` — integer property; total requests intercepted across all URLs (`len(m.ordered_requests)`).
 - `MockResponse` — object returned by `m.add()` / `m.get()` / `m.post()` etc. Its `call_count` attribute increments each time that specific registration is matched and served, enabling per-handler assertions: `rsp = m.get(url); ...; assert rsp.call_count == 2`.
 - `m.last_request` — property returning the most recently intercepted `AiointerceptRequest`, or `None` if no requests have been made.
+- Streaming response bodies: `body=` now accepts an `AsyncIterable[bytes]` (e.g. an async generator). aiohttp wraps it in an `AsyncIterablePayload` and streams the chunks with chunked transfer encoding, so the client receives each piece as it is written — useful for mocking server-sent events / OpenAI-style streaming endpoints. The iterator is drained once: with `repeat` only the first response carries the body and later ones come back empty, so register a fresh iterator per expected request. Related to [aioresponses#274](https://github.com/pnuckowski/aioresponses/issues/274).
 
 ### Fixed
 
