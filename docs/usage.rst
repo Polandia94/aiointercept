@@ -64,7 +64,8 @@ Registering mock responses
         url,                    # str | yarl.URL | re.Pattern
         method="GET",           # HTTP method (case-insensitive)
         status=200,
-        body=b"",               # raw response body (str is UTF-8 encoded)
+        body=b"",               # raw response body (str is UTF-8 encoded;
+                                # an AsyncIterable[bytes] streams chunked)
         json=None,              # serialized to JSON, overrides body
         payload=None,           # alias for json
         headers=None,           # extra response headers
@@ -120,6 +121,37 @@ Repeat and response queuing
     m.post(url, status=201, payload={"created": True})
     m.post(url, status=409, payload={"error": "conflict"})
     # First POST -> 201, second POST -> 409, third POST -> ClientConnectionError
+
+
+Streaming response bodies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pass an ``AsyncIterable[bytes]`` (e.g. an async generator) as ``body`` to stream
+the response chunk by chunk. aiohttp wraps it in an ``AsyncIterablePayload`` and
+sends the chunks with chunked transfer encoding, so the client receives each
+piece as it is written — handy for mocking server-sent events or
+OpenAI-style streaming endpoints.
+
+.. code-block:: python
+
+    async def event_stream():
+        yield b'data: {"delta": "Hello"}\n\n'
+        yield b'data: {"delta": " world"}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("https://api.openai.com/v1/stream", body=event_stream())
+
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get("https://api.openai.com/v1/stream")
+            async for chunk in resp.content.iter_any():
+                handle(chunk)   # each yielded piece arrives as it is written
+
+.. note::
+
+   The async iterator is drained once. Combined with ``repeat`` only the first
+   response carries the body and later ones come back empty, so register a fresh
+   iterator per expected request instead.
 
 
 Callbacks

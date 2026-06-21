@@ -1925,3 +1925,50 @@ async def test_start_clears_requests_on_restart():
         assert len(m.ordered_requests) == 0
     finally:
         await m.stop()
+
+
+# ---------------------------------------------------------------------------
+# Streaming response
+# ---------------------------------------------------------------------------
+
+
+async def test_streaming_response_body():
+    """An async-generator ``body`` yields chunks; aiohttp wraps it in an
+    AsyncIterablePayload and streams them with chunked transfer encoding via the
+    StreamResponse machinery, so the client receives each piece as it is written."""
+    chunks = [b"first-chunk", b"second-chunk", b"third-chunk"]
+
+    async def body_gen():
+        for chunk in chunks:
+            yield chunk
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://stream.test/data", body=body_gen())
+        resp = await session.get("http://stream.test/data")
+        assert resp.headers.get("Transfer-Encoding") == "chunked"
+        received = [chunk async for chunk in resp.content.iter_chunked(len(chunks[0]))]
+
+    assert b"".join(received) == b"".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Streaming request
+# ---------------------------------------------------------------------------
+
+
+async def test_streaming_request_body():
+    """Client sends an async-generator body (chunked transfer encoding); the
+    mock server assembles all pieces and exposes the full body via captured_body."""
+    parts = [b"part-A", b"part-B", b"part-C"]
+
+    async def body_gen():
+        for part in parts:
+            yield part
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post("http://stream.test/upload", status=200)
+        resp = await session.post("http://stream.test/upload", data=body_gen())
+        assert resp.status == 200
+
+    assert m.last_request is not None
+    assert m.last_request.captured_body == b"".join(parts)
