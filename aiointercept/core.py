@@ -284,7 +284,8 @@ class CallbackResult:
     Args:
         method: HTTP method (default GET; not used by the server handler).
         status: HTTP response status code.
-        body: Raw response body as str or bytes.
+        body: Raw response body as str or bytes, or an ``AsyncIterable[bytes]``
+            to stream the response chunked (see ``aiointercept.add``).
         content_type: ``Content-Type`` header value. Set to ``None`` when
             *headers* already carries a ``Content-Type`` entry, to avoid
             colliding with it.
@@ -298,7 +299,7 @@ class CallbackResult:
         self,
         method: str = hdrs.METH_GET,
         status: int = 200,
-        body: str | bytes = "",
+        body: str | bytes | AsyncIterable[bytes] = "",
         content_type: str = "application/json",
         payload: Any = None,
         headers: Mapping[str, str] | None = None,

@@ -140,7 +140,13 @@ OpenAI-style streaming endpoints.
         yield b"data: [DONE]\n\n"
 
     async with aiointercept(mock_external_urls=True) as m:
-        m.get("https://api.openai.com/v1/stream", body=event_stream())
+        # body defaults to Content-Type: application/json — set content_type
+        # explicitly so the mock matches what a real SSE endpoint returns.
+        m.get(
+            "https://api.openai.com/v1/stream",
+            body=event_stream(),
+            content_type="text/event-stream",
+        )
 
         async with aiohttp.ClientSession() as session:
             resp = await session.get("https://api.openai.com/v1/stream")
