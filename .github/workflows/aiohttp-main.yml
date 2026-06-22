@@ -1,4 +1,4 @@
-name: aiohttp main
+name: aiohttp master
 
 # Early warning against unreleased aiohttp changes. Runs weekly and on demand.
 on:
@@ -8,7 +8,7 @@ on:
     inputs:
       aiohttp_ref:
         description: "aiohttp branch / tag / commit to test against"
-        default: "main"
+        default: "master"
         required: false
       aiointercept_ref:
         description: "aiointercept branch / tag / commit to check out (leave blank for default branch)"
@@ -36,11 +36,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group tests
 
-      - name: Check out aiohttp ${{ inputs.aiohttp_ref || 'main' }}
+      - name: Check out aiohttp ${{ inputs.aiohttp_ref || 'master' }}
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: aio-libs/aiohttp
-          ref: ${{ inputs.aiohttp_ref || 'main' }}
+          ref: ${{ inputs.aiohttp_ref || 'master' }}
           path: aiohttp-src
           submodules: recursive
 
