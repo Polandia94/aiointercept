@@ -2,19 +2,20 @@
 
 Snapshot from [`bench_compare.py`](bench_compare.py). Per-op times, median of 3 runs. Ratios vs `aioresponses`.
 
-Environment: Python 3.14.3, aiohttp 3.13.5, Windows 11, Intel i7. Re-run with `uv sync --group benchmarks && uv run python benchmarks/bench_compare.py`.
+Environment: Python 3.14.3, aiohttp 3.14.1, Windows 11, Intel i7. Re-run with `uv sync --group benchmarks && uv run python benchmarks/bench_compare.py`.
+Aioresponses is not comaptible with aiohttp 3.14.1, so I used a local copy with the fix merged
 
 | Scenario                              |    N | aioresponses | aii(dns=F) | aii(dns=T) | F/aio | T/aio |
 |---------------------------------------|-----:|-------------:|-----------:|-----------:|------:|------:|
-| lifecycle (CM + GET + assert)         |   20 |      4.01 ms |    8.95 ms |   71.16 ms |  2.2x | 17.7x |
-| fixture (1 CM, N x GET+assert+clear)  |   50 |      1.45 ms |    3.81 ms |    4.98 ms |  2.6x |  3.4x |
-| sequential GET                        |  500 |     841.6 us |    1.82 ms |    1.68 ms |  2.2x |  2.0x |
-| concurrent GET (batch=50)             |  500 |     969.2 us |    1.15 ms |    1.56 ms |  1.2x |  1.6x |
-| POST + assert_called_with             |  200 |     847.3 us |    1.89 ms |    2.43 ms |  2.2x |  2.9x |
-| regex pattern URL                     |  200 |     877.9 us |    1.45 ms |    2.12 ms |  1.7x |  2.4x |
-| large payload (1 MB)                  |   20 |      1.01 ms |    5.51 ms |   20.44 ms |  5.4x | 20.2x |
-| HTTPS                                 |   20 |      1.36 ms |        N/A |   12.87 ms |    -- |  9.4x |
-| many distinct mocked URLs             |  500 |      1.14 ms |    1.94 ms |    1.95 ms |  1.7x |  1.7x |
+| lifecycle (CM + GET + assert)         |   20 |      7.93 ms |   10.06 ms |   15.91 ms |  1.3x |  2.0x |
+| fixture (1 CM, N x GET+assert+clear)  |   50 |      2.46 ms |    4.84 ms |    8.80 ms |  2.0x |  3.6x |
+| sequential GET                        |  500 |      1.21 ms |    1.32 ms |    2.81 ms |  1.1x |  2.3x |
+| concurrent GET (batch=50)             |  500 |      1.44 ms |   998.8 us |    1.36 ms |  0.7x |  0.9x |
+| POST + assert_called_with             |  200 |      1.51 ms |    2.60 ms |    2.42 ms |  1.7x |  1.6x |
+| regex pattern URL                     |  200 |      1.57 ms |    1.56 ms |    1.53 ms |  1.0x |  1.0x |
+| large payload (1 MB)                  |   20 |      1.52 ms |    7.82 ms |   10.74 ms |  5.1x |  7.1x |
+| HTTPS                                 |   20 |      1.43 ms |        N/A |    1.64 ms |    -- |  1.1x |
+| many distinct mocked URLs             |  500 |      1.55 ms |    1.54 ms |    2.24 ms |  1.0x |  1.4x |
 
 ## Reading the columns
 
@@ -26,9 +27,9 @@ The slowdown is the price of real serialization and a real `aiohttp.web.Request`
 
 ## What dominates each scenario
 
-- **lifecycle** — server startup + DNS-patch install/uninstall per iteration. Worst case for `aii`. Use the [`aiointercept_mock` fixture](../README.md#sharing-the-server-across-tests) to amortize.
-- **fixture** — what the pytest plugin enables. Gap drops from ~17x to ~3x once startup is paid once.
-- **concurrent GET** — most competitive (1.2x): localhost round-trip is dominated by event-loop scheduling.
-- **large payload** — real bytes on a real socket; 5.4x is the wire-transfer cost.
-- **HTTPS** — `dns=F` is N/A (HTTP-only server, no CA pinned); `dns=T` pays ~9x for SSL-context faking.
-- **many URLs** — both `aii` modes scale identically with handler count.
+- **lifecycle** — server startup + DNS-patch install/uninstall per iteration. Highest absolute cost, but per-iteration startup dominates both backends so the ratio stays modest (2.0x). Use the [`aiointercept_mock` fixture](../README.md#sharing-the-server-across-tests) to amortize.
+- **fixture** — what the pytest plugin enables: startup paid once, then steady-state GET+assert+clear. The 3.6x here is the real per-request overhead once per-test startup is out of the picture.
+- **concurrent GET** — most competitive: `aii` actually edges out `aioresponses` (0.7x / 0.9x) because the localhost round-trip is dominated by event-loop scheduling both backends pay.
+- **large payload** — real bytes on a real socket; 5.1x is the wire-transfer cost.
+- **HTTPS** — `dns=F` is N/A (HTTP-only server, no CA pinned); `dns=T` adds only ~1.1x for SSL-context faking.
+- **many URLs** — `dns=F` scales identically to `aioresponses` (1.0x); `dns=T` adds ~1.4x for the resolver/SSL patches.
