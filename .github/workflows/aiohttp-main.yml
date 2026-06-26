@@ -1,10 +1,19 @@
-name: aiohttp main
+name: aiohttp master
 
 # Early warning against unreleased aiohttp changes. Runs weekly and on demand.
 on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+    inputs:
+      aiohttp_ref:
+        description: "aiohttp branch / tag / commit to test against"
+        default: "master"
+        required: false
+      aiointercept_ref:
+        description: "aiointercept branch / tag / commit to check out (leave blank for default branch)"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -13,7 +22,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.aiointercept_ref || github.ref }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
@@ -25,10 +36,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group tests
 
-      - name: Check out aiohttp master
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Check out aiohttp ${{ inputs.aiohttp_ref || 'master' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: aio-libs/aiohttp
+          ref: ${{ inputs.aiohttp_ref || 'master' }}
           path: aiohttp-src
           submodules: recursive
 

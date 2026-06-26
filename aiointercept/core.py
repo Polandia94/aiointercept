@@ -8,7 +8,7 @@ import socket
 import threading
 import typing
 import warnings
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
 from re import Pattern
@@ -284,7 +284,8 @@ class CallbackResult:
     Args:
         method: HTTP method (default GET; not used by the server handler).
         status: HTTP response status code.
-        body: Raw response body as str or bytes.
+        body: Raw response body as str or bytes, or an ``AsyncIterable[bytes]``
+            to stream the response chunked (see ``aiointercept.add``).
         content_type: ``Content-Type`` header value. Set to ``None`` when
             *headers* already carries a ``Content-Type`` entry, to avoid
             colliding with it.
@@ -298,7 +299,7 @@ class CallbackResult:
         self,
         method: str = hdrs.METH_GET,
         status: int = 200,
-        body: str | bytes = "",
+        body: str | bytes | AsyncIterable[bytes] = "",
         content_type: str = "application/json",
         payload: Any = None,
         headers: Mapping[str, str] | None = None,
@@ -325,6 +326,29 @@ class _CloseConnection:
 
 _CLOSE_CONNECTION = _CloseConnection()
 handler_type = Callable[[web.Request], Awaitable[web.StreamResponse]] | _CloseConnection
+
+
+class MockResponse:
+    """A registered mock handler returned by :meth:`~aiointercept.aiointercept.add`
+    and the shorthand methods (:meth:`~aiointercept.aiointercept.get`,
+    :meth:`~aiointercept.aiointercept.post`, etc.).
+
+    Attributes:
+        call_count: Number of times this mock has been matched and served.
+    """
+
+    def __init__(self, handler: handler_type) -> None:
+        self._handler = handler
+        self.call_count: int = 0
+
+    async def __call__(self, request: web.Request) -> web.StreamResponse:
+        self.call_count += 1
+        if self._handler is _CLOSE_CONNECTION:
+            if request.transport:
+                request.transport.close()
+            return web.Response(status=502, text="Handler registered to raise ClientConnectionError.")
+        fn = cast("Callable[[web.Request], Awaitable[web.StreamResponse]]", self._handler)
+        return await fn(request)
 
 
 class aiointercept:  # noqa: N801
@@ -414,12 +438,13 @@ class aiointercept:  # noqa: N801
         self._patterns_list: list[Pattern[str]] = []
 
         # handler are (path, method) → handler or list of handlers (if repeat != True)
-        self.handlers: dict[tuple[str, str], handler_type | list[handler_type]] = {}
+        self.handlers: dict[tuple[str, str], MockResponse | list[MockResponse]] = {}
         # patterns_handler are (pattern, method) → handler or list of handlers (if repeat != True)
-        self.patterns_handler: dict[tuple[Pattern[str], str], handler_type | list[handler_type]] = {}
+        self.patterns_handler: dict[tuple[Pattern[str], str], MockResponse | list[MockResponse]] = {}
 
         # recorded requests: {(METHOD, URL): [web.Request, ...]}
         self.requests: dict[tuple[str, URL], list[AiointerceptRequest]] = {}
+        self.ordered_requests: list[tuple[tuple[str, URL], AiointerceptRequest]] = []
 
         self.server: TestServer | None = None
         self._bypass_session: aiohttp.ClientSession | None = None
@@ -447,6 +472,8 @@ class aiointercept:  # noqa: N801
         ``start()`` with a :meth:`stop`.
         """
         self._caller_loop = asyncio.get_running_loop()
+        self.requests.clear()
+        self.ordered_requests.clear()
         await self._start_server_thread()
         assert self._server_loop is not None
         assert self.server is not None
@@ -655,11 +682,12 @@ class aiointercept:  # noqa: N801
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
         self.requests[key].append(aiointercept_request)
+        self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, request.method))
         if isinstance(selected_handler, list):
             if not selected_handler:
-                handler: handler_type | None = None
+                handler: MockResponse | None = None
             else:
                 handler = selected_handler.pop(0)
 
@@ -719,21 +747,15 @@ class aiointercept:  # noqa: N801
             # Fallback in case transport.close() didn't take effect — the client
             # should normally see ClientConnectionError before reading this body.
             return web.Response(status=502, text="No handler registered for this request.")
-        if handler is _CLOSE_CONNECTION:
-            if request.transport:
-                request.transport.close()
-            # Fallback in case transport.close() didn't take effect — the client
-            # should normally see ClientConnectionError before reading this body.
-            return web.Response(status=502, text="Handler registered to raise ClientConnectionError.")
-        callable_handler = cast("Callable[[web.Request], Awaitable[web.StreamResponse]]", handler)
-        return await callable_handler(request)
+        assert handler is not None
+        return await handler(request)
 
     def add(
         self,
         url: URL | str | Pattern[str],
         method: str = hdrs.METH_GET,
         status: int = 200,
-        body: str | bytes = b"",
+        body: str | bytes | AsyncIterable[bytes] = b"",
         json: Any = None,
         payload: Any = None,
         headers: Mapping[str, str] | None = None,
@@ -742,7 +764,7 @@ class aiointercept:  # noqa: N801
         callback: Callable[..., CallbackResult | Awaitable[CallbackResult]] | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
-    ) -> None:
+    ) -> "MockResponse":
         """Register a mock handler for *url* and *method*.
 
         Args:
@@ -751,6 +773,13 @@ class aiointercept:  # noqa: N801
             method: HTTP method (case-insensitive, default ``GET``).
             status: Response status code.
             body: Raw response body (str is UTF-8 encoded; default empty bytes).
+                An ``AsyncIterable[bytes]`` (e.g. an async generator) is passed
+                straight through to :class:`aiohttp.web.Response`, which wraps it
+                in an ``AsyncIterablePayload`` and streams the chunks with chunked
+                transfer encoding — the client receives each piece as it is
+                written. The iterator is drained once: with ``repeat`` only the
+                first response carries the body and later ones come back empty,
+                so register a fresh iterator per expected request.
             json: Response body as a JSON-serialisable object (overrides *body*).
             payload: Alias for *json*.
             headers: Additional response headers.
@@ -843,6 +872,9 @@ class aiointercept:  # noqa: N801
                 _content_type = content_type
                 _reason = reason
 
+            # ``_body`` may be bytes/str or an AsyncIterable[bytes]; in the
+            # latter case web.Response wraps it in an AsyncIterablePayload and
+            # streams it chunked, so we don't special-case streaming here.
             return web.Response(
                 status=_status,
                 body=_body,
@@ -851,19 +883,20 @@ class aiointercept:  # noqa: N801
                 content_type=_content_type,
             )
 
-        handler_or_exc: handler_type = handler if not exception else _CLOSE_CONNECTION
+        raw: handler_type = handler if not exception else _CLOSE_CONNECTION
+        mock_response = MockResponse(raw)
         if repeat is True:
             if isinstance(url, Pattern):
-                self.patterns_handler[url, method] = handler_or_exc
-                return
+                self.patterns_handler[url, method] = mock_response
+                return mock_response
             handler_url = str(normalize_url(url))
-            self.handlers[handler_url, method] = handler_or_exc
+            self.handlers[handler_url, method] = mock_response
         else:
             if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
-            handlers: list[handler_type] = [handler_or_exc] * repeat
+            handlers: list[MockResponse] = [mock_response] * repeat
             if isinstance(url, Pattern):
                 if (url, method) in self.patterns_handler:
                     list_pattern_handler = self.patterns_handler[(url, method)]
@@ -877,7 +910,7 @@ class aiointercept:  # noqa: N801
 
                 else:
                     self.patterns_handler[url, method] = handlers
-                return
+                return mock_response
             handler_url = str(normalize_url(url))
             if (handler_url, method) in self.handlers:
                 handlers_list = self.handlers[(handler_url, method)]
@@ -889,38 +922,40 @@ class aiointercept:  # noqa: N801
                     )
             else:
                 self.handlers[handler_url, method] = handlers
+        return mock_response
 
-    def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock GET handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_GET, **kwargs)
+        return self.add(url, method=hdrs.METH_GET, **kwargs)
 
-    def post(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def post(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock POST handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_POST, **kwargs)
+        return self.add(url, method=hdrs.METH_POST, **kwargs)
 
-    def put(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def put(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock PUT handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_PUT, **kwargs)
+        return self.add(url, method=hdrs.METH_PUT, **kwargs)
 
-    def patch(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def patch(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock PATCH handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_PATCH, **kwargs)
+        return self.add(url, method=hdrs.METH_PATCH, **kwargs)
 
-    def delete(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def delete(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock DELETE handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_DELETE, **kwargs)
+        return self.add(url, method=hdrs.METH_DELETE, **kwargs)
 
-    def head(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def head(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock HEAD handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_HEAD, **kwargs)
+        return self.add(url, method=hdrs.METH_HEAD, **kwargs)
 
-    def options(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> None:
+    def options(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
         """Register a mock OPTIONS handler. See :meth:`add` for all keyword arguments."""
-        self.add(url, method=hdrs.METH_OPTIONS, **kwargs)
+        return self.add(url, method=hdrs.METH_OPTIONS, **kwargs)
 
     def clear(self) -> None:
         """Clear all recorded requests and registered handlers."""
         self.requests.clear()
+        self.ordered_requests.clear()
         self.handlers.clear()
         self.patterns_handler.clear()
         self._host_list.clear()
@@ -935,13 +970,25 @@ class aiointercept:  # noqa: N801
     def assert_not_called(self) -> None:
         """Assert that no requests were made."""
         if self.requests:
-            raise AssertionError(f"Expected no calls, got {sum(len(v) for v in self.requests.values())}.")
+            raise AssertionError(f"Expected no calls, got {len(self.ordered_requests)}")
 
     def assert_called_once(self) -> None:
         """Assert that exactly one request was made across all URLs."""
-        count = sum(len(v) for v in self.requests.values())
+        count = len(self.ordered_requests)
         if count != 1:
             raise AssertionError(f"Expected exactly 1 call, got {count}.")
+
+    @property
+    def call_count(self) -> int:
+        """Total number of requests intercepted across all URLs."""
+        return len(self.ordered_requests)
+
+    @property
+    def last_request(self) -> "AiointerceptRequest | None":
+        """The most recently intercepted request, or ``None`` if no requests have been made."""
+        if not self.ordered_requests:
+            return None
+        return self.ordered_requests[-1][1]
 
     def _no_calls_message(self, method: str, url: URL) -> str:
         """Build a 'No calls to ...' message, suggesting similar recorded calls."""

@@ -18,7 +18,7 @@ from aiohttp.connector import TCPConnector
 from aiohttp.test_utils import TestServer
 from yarl import URL
 
-from aiointercept import CallbackResult, aiointercept
+from aiointercept import CallbackResult, MockResponse, aiointercept
 from tests.conftest import GZIP_PAYLOAD, network_retry
 
 
@@ -1682,3 +1682,293 @@ async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestSer
             assert (await first.json())["cookie_header"] is None
             second = await session.get(f"{base}/cookies")
             assert (await second.json())["cookie_header"] is None
+
+
+# ---------------------------------------------------------------------------
+# ordered_requests
+# ---------------------------------------------------------------------------
+
+
+async def test_ordered_requests_populated_in_arrival_order():
+    """ordered_requests is a flat list of (key, AiointerceptRequest) in arrival order."""
+    url_a = "http://order.test/a"
+    url_b = "http://order.test/b"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url_a, status=200, repeat=True)
+        m.get(url_b, status=200, repeat=True)
+        await session.get(url_a)
+        await session.get(url_b)
+        await session.get(url_a)
+
+    assert len(m.ordered_requests) == 3
+    (k0, _), (k1, _), (k2, _) = m.ordered_requests
+    assert k0 == ("GET", URL(url_a))
+    assert k1 == ("GET", URL(url_b))
+    assert k2 == ("GET", URL(url_a))
+
+
+async def test_ordered_requests_second_element_is_request():
+    """Each ordered_requests entry's second element is the AiointerceptRequest object."""
+    url = "http://order.test/req"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, json={"x": 1})
+
+    (_, req) = m.ordered_requests[0]
+    assert req.kwargs["json"] == {"x": 1}
+
+
+async def test_ordered_requests_cleared_by_clear():
+    """clear() empties ordered_requests."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://order.test/clear", status=200)
+        await session.get("http://order.test/clear")
+        assert len(m.ordered_requests) == 1
+        m.clear()
+        assert m.ordered_requests == []
+
+
+async def test_ordered_requests_accessible_after_stop():
+    """ordered_requests survives stop() so post-context assertions can read it."""
+    url = "http://order.test/after-stop"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url, status=200)
+        await session.get(url)
+
+    assert len(m.ordered_requests) == 1
+    assert m.ordered_requests[0][0] == ("GET", URL(url))
+
+
+# ---------------------------------------------------------------------------
+# call_count property (total)
+# ---------------------------------------------------------------------------
+
+
+async def test_call_count_zero_before_any_request():
+    """call_count is 0 before any requests are made."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://cc.test/", status=200)
+        assert m.call_count == 0
+
+
+async def test_call_count_increments_per_request():
+    """call_count increments by one for each intercepted request."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://cc.test/", status=200, repeat=True)
+        for expected in range(1, 4):
+            await session.get("http://cc.test/")
+            assert m.call_count == expected
+
+
+async def test_call_count_sums_across_urls():
+    """call_count counts requests to all URLs, not just one."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://cc.test/a", status=200)
+        m.post("http://cc.test/b", status=201)
+        await session.get("http://cc.test/a")
+        await session.post("http://cc.test/b")
+        assert m.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# last_request property
+# ---------------------------------------------------------------------------
+
+
+async def test_last_request_none_before_any_call():
+    """last_request is None before any requests are made."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://lr.test/", status=200)
+        assert m.last_request is None
+
+
+async def test_last_request_is_most_recent_across_urls():
+    """last_request always points to the most recently intercepted request."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://lr.test/a", status=200)
+        m.get("http://lr.test/b", status=200)
+        await session.get("http://lr.test/a")
+        after_a = m.last_request
+        await session.get("http://lr.test/b")
+        after_b = m.last_request
+
+    assert after_a is not None
+    assert after_b is not None
+    assert after_a is not after_b
+    assert after_a is m.ordered_requests[-2][1]
+    assert after_b is m.ordered_requests[-1][1]
+
+
+async def test_last_request_is_none_after_clear():
+    """last_request returns None after clear() empties ordered_requests."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://lr.test/clear", status=200)
+        await session.get("http://lr.test/clear")
+        assert m.last_request is not None
+        m.clear()
+        assert m.last_request is None
+
+
+# ---------------------------------------------------------------------------
+# MockResponse.call_count (per-handler)
+# ---------------------------------------------------------------------------
+
+
+async def test_mock_response_call_count_starts_at_zero():
+    """MockResponse.call_count is 0 immediately after registration."""
+    async with aiointercept(mock_external_urls=True) as m:
+        rsp = m.get("http://mrc.test/", status=200)
+        assert isinstance(rsp, MockResponse)
+        assert rsp.call_count == 0
+
+
+async def test_mock_response_call_count_increments_on_hit():
+    """MockResponse.call_count increments each time the mock is matched."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        rsp = m.get("http://mrc.test/", status=200, repeat=True)
+        await session.get("http://mrc.test/")
+        assert rsp.call_count == 1
+        await session.get("http://mrc.test/")
+        assert rsp.call_count == 2
+
+
+async def test_mock_response_call_count_finite_repeat():
+    """With repeat=N, call_count accumulates across all N slots — they share the same object."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        rsp = m.get("http://mrc.test/finite", status=200, repeat=3)
+        for i in range(1, 4):
+            await session.get("http://mrc.test/finite")
+            assert rsp.call_count == i
+
+
+async def test_mock_response_call_count_independent_per_registration():
+    """Two registrations for the same URL queue independently and track their own counts."""
+    url = "http://mrc.test/queue"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        rsp1 = m.get(url, status=200)
+        rsp2 = m.get(url, status=201)
+        await session.get(url)
+        await session.get(url)
+        assert rsp1.call_count == 1
+        assert rsp2.call_count == 1
+
+
+async def test_mock_response_call_count_pattern_handler():
+    """MockResponse.call_count works when the handler is registered with a regex pattern."""
+    pattern = re.compile(r"^http://mrc\.test/items/\d+$")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        rsp = m.add(pattern, method="GET", status=200, repeat=True)
+        await session.get("http://mrc.test/items/1")
+        await session.get("http://mrc.test/items/2")
+        assert rsp.call_count == 2
+
+
+async def test_mock_response_call_count_exception_handler():
+    """MockResponse.call_count increments even when the handler closes the connection."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        rsp = m.get("http://mrc.test/err", exception=True)
+        with pytest.raises(ClientConnectionError):
+            await session.get("http://mrc.test/err")
+        assert rsp.call_count == 1
+
+
+async def test_mock_response_returned_from_all_shortcuts():
+    """Every shorthand method returns a MockResponse instance."""
+    async with aiointercept(mock_external_urls=True) as m:
+        for shortcut in ("get", "post", "put", "patch", "delete", "head", "options"):
+            rsp = getattr(m, shortcut)("http://shortcuts.test/", status=200)
+            assert isinstance(rsp, MockResponse), f"{shortcut}() must return MockResponse"
+
+
+# ---------------------------------------------------------------------------
+# Decorator reuse: start() clears request state between invocations
+# ---------------------------------------------------------------------------
+
+
+async def test_decorator_reuse_resets_request_state():
+    """Each decorator invocation starts with an empty request log; counts from
+    prior runs do not bleed into the next invocation."""
+    url = "http://reuse.test/"
+    session = ClientSession()
+    counts_per_run: list[int] = []
+
+    @aiointercept(mock_external_urls=True)
+    async def run(m):
+        m.get(url, status=200)
+        await session.get(url)
+        counts_per_run.append(m.call_count)
+        m.assert_called_once()
+
+    await run()
+    await run()
+    await session.close()
+
+    assert counts_per_run == [1, 1]
+
+
+async def test_start_clears_requests_on_restart():
+    """Manual start()/stop() cycles reset call_count and ordered_requests."""
+    m = aiointercept()
+    await m.start()
+    try:
+        m.get(f"{m.server_url}/ping", status=200, body=b"pong")
+        async with ClientSession() as session:
+            await session.get(f"{m.server_url}/ping")
+        assert m.call_count == 1
+        assert len(m.ordered_requests) == 1
+    finally:
+        await m.stop()
+
+    await m.start()
+    try:
+        assert m.call_count == 0
+        assert len(m.ordered_requests) == 0
+    finally:
+        await m.stop()
+
+
+# ---------------------------------------------------------------------------
+# Streaming response
+# ---------------------------------------------------------------------------
+
+
+async def test_streaming_response_body():
+    """An async-generator ``body`` yields chunks; aiohttp wraps it in an
+    AsyncIterablePayload and streams them with chunked transfer encoding via the
+    StreamResponse machinery, so the client receives each piece as it is written."""
+    chunks = [b"first-chunk", b"second-chunk", b"third-chunk"]
+
+    async def body_gen():
+        for chunk in chunks:
+            yield chunk
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://stream.test/data", body=body_gen())
+        resp = await session.get("http://stream.test/data")
+        assert resp.headers.get("Transfer-Encoding") == "chunked"
+        received = [chunk async for chunk in resp.content.iter_chunked(len(chunks[0]))]
+
+    assert b"".join(received) == b"".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Streaming request
+# ---------------------------------------------------------------------------
+
+
+async def test_streaming_request_body():
+    """Client sends an async-generator body (chunked transfer encoding); the
+    mock server assembles all pieces and exposes the full body via captured_body."""
+    parts = [b"part-A", b"part-B", b"part-C"]
+
+    async def body_gen():
+        for part in parts:
+            yield part
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post("http://stream.test/upload", status=200)
+        resp = await session.post("http://stream.test/upload", data=body_gen())
+        assert resp.status == 200
+
+    assert m.last_request is not None
+    assert m.last_request.captured_body == b"".join(parts)
