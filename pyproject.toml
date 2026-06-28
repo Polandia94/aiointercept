@@ -89,6 +89,7 @@ asyncio_mode = "auto"
 markers = [
     "network: hits the real internet (deselect locally with -m 'not network')",
 ]
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 source = ["aiointercept"]

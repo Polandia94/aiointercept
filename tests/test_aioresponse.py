@@ -86,6 +86,7 @@ class AIOResponsesTestCase(AsyncTestCase):
     @aiointercept(True)
     async def test_base_url(self, base_url, relative_url, m):
         m.get(self.url, status=200)
+        await self.session.close()  # replace the session created  setup
         self.session = ClientSession(base_url=base_url)
         response = await self.session.get(relative_url)
         self.assertEqual(response.status, 200)
@@ -93,6 +94,7 @@ class AIOResponsesTestCase(AsyncTestCase):
     @aiointercept(True)
     async def test_session_headers(self, m):
         m.get(self.url)
+        await self.session.close()  # replace the session created in setup
         self.session = ClientSession(headers={"Authorization": "Bearer foobar"})
         response = await self.session.get(self.url)
 
