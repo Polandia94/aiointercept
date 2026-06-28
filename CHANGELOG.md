@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-06-28
+
 ### Added
 
 - `m.ordered_requests` — flat list of `(key, AiointerceptRequest)` tuples in arrival order, giving cross-URL request ordering that `m.requests` (grouped by key) does not provide.
