@@ -3,7 +3,7 @@
 Snapshot from [`bench_compare.py`](bench_compare.py). Per-op times, median of 3 runs. Ratios vs `aioresponses`.
 
 Environment: Python 3.14.3, aiohttp 3.14.1, Windows 11, Intel i7. Re-run with `uv sync --group benchmarks && uv run python benchmarks/bench_compare.py`.
-Aioresponses is not comaptible with aiohttp 3.14.1, so I used a local copy with the fix merged
+Aioresponses is not compatible with aiohttp 3.14.1, so I used a local copy with the fix merged.
 
 | Scenario                              |    N | aioresponses | aii(dns=F) | aii(dns=T) | F/aio | T/aio |
 |---------------------------------------|-----:|-------------:|-----------:|-----------:|------:|------:|
