@@ -95,7 +95,8 @@ class AiointerceptRequest(web.Request):
     :meth:`aiointercept.add`.
 
     Attributes:
-        captured_body: The raw request body as bytes, read before dispatch.
+        captured_body: The raw request body as bytes, read before dispatch, or
+            ``None`` when the request carried no body (e.g. a plain GET).
         kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
             key → list of values), ``data`` (raw body or ``None`` if no body),
             `and ``json`` (decoded body, or ``None``) — the keyword arguments
@@ -106,7 +107,7 @@ class AiointerceptRequest(web.Request):
             used as the :attr:`aiointercept.requests` key.
     """
 
-    captured_body: bytes
+    captured_body: bytes | None
     kwargs: AiointerceptRequestKwargs
     canonical_url: URL
 
@@ -661,7 +662,8 @@ class aiointercept:  # noqa: N801
         if req_host in self._https_hosts:
             url = url.with_scheme("https")
 
-        key = (request.method.upper(), url)
+        req_method = request.method.upper()
+        key = (req_method, url)
         self.requests.setdefault(key, [])
         captured_body = None
         json = None
@@ -684,7 +686,7 @@ class aiointercept:  # noqa: N801
         self.requests[key].append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
-        selected_handler = self.handlers.get((url_str, request.method))
+        selected_handler = self.handlers.get((url_str, req_method))
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: MockResponse | None = None
@@ -700,14 +702,14 @@ class aiointercept:  # noqa: N801
                 f"http://{original_host}{request.path_qs}",
             ]
             for (pattern, method), pattern_handler in self.patterns_handler.items():
-                if any(pattern.match(u) for u in original_urls) and method == request.method:
+                if any(pattern.match(u) for u in original_urls) and method == req_method:
                     if isinstance(pattern_handler, list):
                         handler = pattern_handler[0]
                         remaining = pattern_handler[1:]
                         if remaining:
-                            self.patterns_handler[pattern, request.method] = remaining
+                            self.patterns_handler[pattern, req_method] = remaining
                         else:
-                            del self.patterns_handler[pattern, request.method]
+                            del self.patterns_handler[pattern, req_method]
                     else:
                         handler = pattern_handler
                     break
@@ -739,7 +741,7 @@ class aiointercept:  # noqa: N801
                         headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
                         body=body,
                     )
-            warning_msg = self._diagnose_unmatched(request.method.upper(), str(url))
+            warning_msg = self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
             if request.transport:
@@ -1055,7 +1057,7 @@ class aiointercept:  # noqa: N801
         if key not in self.requests:
             raise AssertionError(self._no_calls_message(method, url))
         request: AiointerceptRequest = self.requests[key][-1]
-        actual_body = request.captured_body
+        actual_body = request.captured_body or b""
         if json is not None and json is not mock.ANY:
             # aiohttp sends json= as JSON-encoded bytes with application/json
             actual_body_str = actual_body.decode(errors="replace")

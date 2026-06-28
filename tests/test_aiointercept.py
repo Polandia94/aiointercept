@@ -1536,6 +1536,17 @@ async def test_assert_called_with_json_when_body_not_json():
     )
 
 
+async def test_assert_called_with_json_on_bodyless_request_raises_assertion_error():
+    """A bodyless GET records captured_body as None; assert_called_with(json=...)
+    must surface a clean AssertionError, not an AttributeError on None.decode()."""
+    url = "http://example.com/bodyless"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url, status=200)
+        await session.get(url)
+        with pytest.raises(AssertionError, match="non-JSON body"):
+            m.assert_called_with(url, json={"x": 1})
+
+
 async def test_async_callback_runs_on_server_loop_when_caller_loop_unset():
     """If _caller_loop is None, async callbacks execute directly on the server loop."""
 

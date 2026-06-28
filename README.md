@@ -47,6 +47,27 @@ Full documentation is at **[aiointercept.readthedocs.io](https://aiointercept.re
 - [Assertions](https://aiointercept.readthedocs.io/en/latest/assertions.html) — `assert_called_with` and friends.
 - [API reference](https://aiointercept.readthedocs.io/en/latest/api.html) — every public class and method.
 
+## Sharing the server across tests
+
+Starting and stopping a server for every test adds up. `aiointercept` ships an
+auto-discovered pytest plugin (requires `pytest-asyncio`) that starts the server
+**once per session** and hands each test a cleared mock via the
+`aiointercept_mock` fixture:
+
+```python
+async def test_users(aiointercept_mock):
+    m = aiointercept_mock
+    m.get(f"{m.server_url}/users", payload=[{"id": 1}])
+
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(f"{m.server_url}/users")
+        assert await resp.json() == [{"id": 1}]
+```
+
+The fixture calls `m.clear()` between tests, so registered handlers and recorded
+requests never leak from one test to the next. The session-scoped server itself
+is exposed as `aiointercept_server` if you need it directly.
+
 ## Coming from aioresponses?
 
 `aiointercept` aims to be a near drop-in replacement. The [migration guide](https://aiointercept.readthedocs.io/en/latest/migrating.html) ([MIGRATING.md](MIGRATING.md)) covers every breaking change. If you hit an incompatibility it doesn't cover, please [open an issue](https://github.com/Polandia94/aiointercept/issues).
