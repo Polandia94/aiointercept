@@ -406,6 +406,20 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         assert resp_real.status == 201
 
 
+async def test_pattern_does_not_intercept_bare_ip(real_upstream: TestServer):
+    """Regression (#96): DNS patching must not intercept requests to bare IP
+    addresses. With a regex pattern registered, a request to a bare IP that no
+    pattern matches must reach the real server instead of being redirected to
+    the mock (which raised ServerDisconnectedError in 0.1.8)."""
+    pattern = re.compile(r"^http://api\.example\.com/endpoint/?(?:\?.*)?$")
+    bare_ip_url = f"http://{real_upstream.host}:{real_upstream.port}/status/200"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, payload={"ok": True})
+        resp = await session.get(bare_ip_url)
+        assert resp.status == 200
+        assert await resp.text() == "upstream"
+
+
 # ---------------------------------------------------------------------------
 # Failure scenarios
 # ---------------------------------------------------------------------------
