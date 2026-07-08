@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix regression in 0.1.8: with a regex pattern registered, requests to bare IP addresses (e.g. `http://127.0.0.1:PORT/`) were wrongly redirected to the mock server and raised `ServerDisconnectedError` [#96](https://github.com/Polandia94/aiointercept/issues/96).
+
 ## [0.1.8] - 2026-06-28
 
 ### Added
