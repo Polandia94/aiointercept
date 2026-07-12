@@ -84,8 +84,28 @@ async def mock_http():
 - `add(response_class=X)` → drop `response_class=`, it is ignored
 - `assert_called_with(url, ssl=False)` → drop client-only kwargs like `ssl=`, `timeout=`; they are silently ignored but a `DeprecationWarning` is emitted listing the dropped keys
 - Callbacks only receive `headers`, `query`, `data`, and `json` (no client-side kwargs)
+- `request.kwargs` is a deprecated compatibility shim — read captured requests natively instead (see below)
 - Bare IP addresses are not intercepted
 - `call_count` / `call_args_list` are not implemented
 - `timeout=` passthrough is not supported
+
+## Reading captured requests
+
+`request.kwargs` is a compatibility shim slated for deprecation. Captured requests are real
+`aiohttp.web.Request` objects, so read them natively instead:
+
+| `kwargs` key | native accessor |
+| --- | --- |
+| `kwargs["headers"]` | `request.headers` |
+| `kwargs["query"]` | `request.query` (scalar per key; `request.query.getall(k)` for repeated keys) |
+| `kwargs["data"]` | `request.captured_body` |
+| `kwargs["json"]` | `await request.json()` |
+
+For example, a query-param assertion becomes:
+
+```diff
+- assert request.kwargs["query"]["foo"] == ["bar"]
++ assert request.query["foo"] == "bar"
+```
 
 Once your tests are passing, consider migrating to `mock_external_urls=False` (the default) — no DNS patching, cleaner isolation.

@@ -20,6 +20,7 @@ import aiohttp
 from aiohttp import ClientRequest, ClientResponse, hdrs, web
 from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
+from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
 from yarl import URL
 
@@ -168,6 +169,12 @@ def _make_resolve_result(host: str, inst: "aiointercept") -> "ResolveResult":
 def _resolution_target(host: str) -> "aiointercept | None":
     """Return the mock instance whose server should serve ``host``, or ``None``
     if the host should be resolved for real (passthrough, or no active mock)."""
+    # DNS patching never intercepts bare IP addresses. aiohttp's own
+    # ``_resolve_host`` short-circuits IP literals before ever calling the
+    # resolver. We must reproduce that short-circuit (See #96).
+    if is_ip_address(host):
+        return None
+
     instances = _active_snapshot
 
     for inst in instances:
