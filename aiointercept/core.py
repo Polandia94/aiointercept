@@ -537,7 +537,9 @@ class aiointercept:  # noqa: N801
             self._server_loop = loop
 
             async def _start_server() -> None:
-                app = web.Application()
+                # aiohttp's default 1 MiB cap rejects uploads before the mock handler
+                # can respond, even if the real service would accept them.
+                app = web.Application(client_max_size=0)
                 app.router.add_route("*", "/{tail:.*}", self._dispatch)
                 self.server = TestServer(app)
                 await self.server.start_server()
