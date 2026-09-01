@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-09-01
+
+### Fixed
+
+- Allow request bodies larger than 1MiB [#114](https://github.com/Polandia94/aiointercept/issues/114). Thanks to [@tamird](https://github.com/tamird). 
+
 ## [0.1.9] - 2026-07-08
 
 ### Fixed
