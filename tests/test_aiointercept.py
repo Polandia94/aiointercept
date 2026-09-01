@@ -6,6 +6,7 @@ import logging
 import re
 import socket
 import threading
+from io import BytesIO
 from random import uniform
 from unittest import mock
 
@@ -1981,10 +1982,10 @@ async def test_streaming_response_body():
 # ---------------------------------------------------------------------------
 
 
-async def test_streaming_request_body():
-    """Client sends an async-generator body (chunked transfer encoding); the
-    mock server assembles all pieces and exposes the full body via captured_body."""
-    parts = [b"part-A", b"part-B", b"part-C"]
+@pytest.mark.parametrize("chunked", [False, True], ids=["fixed-length", "chunked"])
+async def test_large_request_body(chunked: bool) -> None:
+    """Bodies larger than 1 MiB reach the handler and are captured in full."""
+    parts = [b"a" * (512 * 1024), b"b" * (512 * 1024), b"c" * (512 * 1024)]
 
     async def body_gen():
         for part in parts:
@@ -1992,7 +1993,7 @@ async def test_streaming_request_body():
 
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
         m.post("http://stream.test/upload", status=200)
-        resp = await session.post("http://stream.test/upload", data=body_gen())
+        resp = await session.post("http://stream.test/upload", data=body_gen() if chunked else BytesIO(b"".join(parts)))
         assert resp.status == 200
 
     assert m.last_request is not None
