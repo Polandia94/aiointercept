@@ -40,6 +40,7 @@ If you were using the decorator form, add `mock_external_urls=True` — everythi
 async def test_something(m):
     m.get("https://api.example.com/data", payload={"ok": True})
 
+
 # After
 @aiointercept(mock_external_urls=True)
 async def test_something(m):
@@ -51,13 +52,12 @@ If your decorated function was **not** async, make it async:
 ```python
 # Before — aioresponses ran the event loop for you
 @aioresponses()
-def test_something(m):
-    ...
+def test_something(m): ...
+
 
 # After — must be async
 @aiointercept(mock_external_urls=True)
-async def test_something(m):
-    ...
+async def test_something(m): ...
 ```
 
 **5. Make pytest fixtures async**
@@ -70,6 +70,7 @@ If you were using aioresponses on a sync fixture, make it async. Use `pytest_asy
 def mock_http():
     with aioresponses() as m:
         yield m
+
 
 # After
 @pytest_asyncio.fixture
