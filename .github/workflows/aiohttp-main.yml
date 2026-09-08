@@ -6,10 +6,6 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
-      aiohttp_ref:
-        description: "aiohttp branch / tag / commit to test against"
-        default: "master"
-        required: false
       aiointercept_ref:
         description: "aiointercept branch / tag / commit to check out (leave blank for default branch)"
         default: ""
@@ -36,11 +32,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group tests
 
-      - name: Check out aiohttp ${{ inputs.aiohttp_ref || 'master' }}
+      - name: Check out aiohttp master
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: aio-libs/aiohttp
-          ref: ${{ inputs.aiohttp_ref || 'master' }}
+          ref: master
           path: aiohttp-src
           submodules: recursive
 
