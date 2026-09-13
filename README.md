@@ -36,7 +36,7 @@ Testing code that makes HTTP requests usually means either hitting a real server
 pip install aiointercept
 ```
 
-**Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13.
+**Requirements:** Python ≥ 3.11, aiohttp ≥ 3.13.
 
 ## Documentation
 

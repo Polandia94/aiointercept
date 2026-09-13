@@ -12,7 +12,7 @@ from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequenc
 from contextlib import suppress
 from functools import wraps
 from re import Pattern
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Self, TypedDict, cast
 from unittest import mock
 from urllib.parse import parse_qs, urlencode
 
@@ -25,6 +25,9 @@ from aiohttp.test_utils import TestServer
 from yarl import URL
 
 from .compat import merge_params, normalize_url
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 # Bounds for the diff body. ``ndiff`` is O(n²) in time and memory, so we clip
 # both the per-line width (a raw body is a single very long line) and the line
@@ -59,12 +62,14 @@ def _oneline(value: Any, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _diff(label: str, expected: Any, actual: Any) -> str:
-    """Build an assertion message diffing *expected* vs *actual*.
+def _mismatch(label: str, expected: Any, actual: Any) -> AssertionError:
+    """Build the :class:`AssertionError` for a mismatch between *expected* and *actual*.
 
-    The first line is a compact ``expected ... got ...`` summary so it reads well
-    in pytest's one-line failure list; the detailed :func:`difflib.ndiff` follows
-    (``-`` marks expected, ``+`` marks actual, ``?`` points at differing chars).
+    The message is a compact ``expected ... got ...`` summary so it reads well in
+    pytest's one-line failure list; the detailed :func:`difflib.ndiff` (``-``
+    marks expected, ``+`` marks actual, ``?`` points at differing chars) rides
+    along as a :pep:`678` note, so ``str(exc)`` stays a single readable line
+    while tracebacks and pytest still render the detail underneath it.
     """
     summary = f"{label}: expected {_oneline(expected)}, got {_oneline(actual)}"
     expected_lines = _pformat(expected)
@@ -76,7 +81,9 @@ def _diff(label: str, expected: Any, actual: Any) -> str:
         body = "(values render identically; check types)"
     if clipped:
         body += "\n... (diff truncated; values too large to show in full)"
-    return f"{summary}\n{body}"
+    error = AssertionError(summary)
+    error.add_note(body)
+    return error
 
 
 class AiointerceptRequestKwargs(TypedDict):
@@ -119,12 +126,12 @@ class AiointerceptRequest(web.Request):
         captured_body: bytes | None,
         kwargs: "AiointerceptRequestKwargs",
         canonical_url: URL,
-    ) -> "AiointerceptRequest":
+    ) -> Self:
         request.__class__ = cls
         request.captured_body = captured_body
         request.kwargs = kwargs
         request.canonical_url = canonical_url
-        return cast("AiointerceptRequest", request)
+        return cast("Self", request)
 
 
 logger = logging.getLogger(__name__)
@@ -467,7 +474,7 @@ class aiointercept:  # noqa: N801
         # the rest of the test.
         self._caller_loop: asyncio.AbstractEventLoop | None = None
 
-    async def __aenter__(self) -> "aiointercept":
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 
@@ -504,7 +511,7 @@ class aiointercept:  # noqa: N801
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: "TracebackType | None",
     ) -> None:
         await self.stop()
 
@@ -1073,8 +1080,9 @@ class aiointercept:  # noqa: N801
             try:
                 actual_json = json_module.loads(actual_body_str)
             except Exception as exc:
-                raise AssertionError(_diff("Expected JSON body, got non-JSON body", json, actual_body)) from exc
-            assert actual_json == json, _diff("JSON body mismatch", json, actual_json)
+                raise _mismatch("Expected JSON body, got non-JSON body", json, actual_body) from exc
+            if actual_json != json:
+                raise _mismatch("JSON body mismatch", json, actual_json)
         elif data is not None and data is not mock.ANY:
             if not isinstance(data, (str, bytes)):
                 actual_ct = request.headers.get("Content-Type", "")
@@ -1086,23 +1094,23 @@ class aiointercept:  # noqa: N801
                     )
                 actual_qs = parse_qs(actual_body.decode(errors="replace"))
                 expected_qs = parse_qs(urlencode(sorted(data.items())))
-                assert actual_qs == expected_qs, _diff("Form-encoded body mismatch", expected_qs, actual_qs)
+                if actual_qs != expected_qs:
+                    raise _mismatch("Form-encoded body mismatch", expected_qs, actual_qs)
             else:
                 expected_body = data.encode() if isinstance(data, str) else data
-                assert actual_body == expected_body, _diff("Body mismatch", expected_body, actual_body)
+                if actual_body != expected_body:
+                    raise _mismatch("Body mismatch", expected_body, actual_body)
         if strict_headers:
             actual_headers = dict(request.headers)
             actual_headers.pop("x-aiointercept-orig-scheme", None)
             expected_headers = headers or {}
-            assert expected_headers == actual_headers, _diff(
-                "Headers mismatch", dict(expected_headers), dict(actual_headers)
-            )
+            if expected_headers != actual_headers:
+                raise _mismatch("Headers mismatch", dict(expected_headers), dict(actual_headers))
         elif headers and headers is not mock.ANY:
             actual_headers_proxy = request.headers
             for k, v in headers.items():
-                assert actual_headers_proxy.get(k) == v, (
-                    f"Header {k!r}: expected {v!r}, got {actual_headers_proxy.get(k)!r}"
-                )
+                if actual_headers_proxy.get(k) != v:
+                    raise AssertionError(f"Header {k!r}: expected {v!r}, got {actual_headers_proxy.get(k)!r}")
 
     def assert_called_once_with(
         self,

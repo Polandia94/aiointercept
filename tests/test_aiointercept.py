@@ -553,9 +553,8 @@ async def test_assert_called_with_json():
         m.assert_called_with(url, method="POST", json={"x": 1})
         with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, method="POST", json={"x": 2})
-    assert str(exc_info.value) == (
-        "JSON body mismatch: expected {'x': 2}, got {'x': 1}\n- {'x': 2}\n?       ^\n+ {'x': 1}\n?       ^"
-    )
+    assert str(exc_info.value) == "JSON body mismatch: expected {'x': 2}, got {'x': 1}"
+    assert exc_info.value.__notes__ == ["- {'x': 2}\n?       ^\n+ {'x': 1}\n?       ^"]
 
 
 async def test_assert_called_with_data_bytes():
@@ -567,7 +566,8 @@ async def test_assert_called_with_data_bytes():
         m.assert_called_with(url, method="POST", data=b"rawbytes")
         with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, method="POST", data=b"otherbytes")
-    assert str(exc_info.value) == ("Body mismatch: expected otherbytes, got rawbytes\n- otherbytes\n+ rawbytes")
+    assert str(exc_info.value) == "Body mismatch: expected otherbytes, got rawbytes"
+    assert exc_info.value.__notes__ == ["- otherbytes\n+ rawbytes"]
 
 
 async def test_assert_called_with_huge_body_diff_is_bounded():
@@ -583,11 +583,12 @@ async def test_assert_called_with_huge_body_diff_is_bounded():
         await session.post(url, data=sent)
         with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, method="POST", data=("b" * 5000).encode())
-    message = str(exc_info.value)
-    # Summary line is capped, and the per-line clip marker keeps the body short.
-    assert message.startswith("Body mismatch: expected ")
-    assert "…(line truncated)" in message
-    assert len(message) < 2000
+    summary = str(exc_info.value)
+    (note,) = exc_info.value.__notes__
+    # Summary line is capped, and the per-line clip marker keeps the note short.
+    assert summary.startswith("Body mismatch: expected ")
+    assert "…(line truncated)" in note
+    assert len(summary) + len(note) < 2000
 
 
 async def test_assert_called_with_data_string():
@@ -609,12 +610,11 @@ async def test_assert_called_with_data_dict():
         with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, method="POST", data={"field": "other"})
     assert str(exc_info.value) == (
-        "Form-encoded body mismatch: expected {'field': ['other']}, got {'field': ['value']}\n"
-        "- {'field': ['other']}\n"
-        "?             ^^^ -\n"
-        "+ {'field': ['value']}\n"
-        "?             ^^^^"
+        "Form-encoded body mismatch: expected {'field': ['other']}, got {'field': ['value']}"
     )
+    assert exc_info.value.__notes__ == [
+        "- {'field': ['other']}\n?             ^^^ -\n+ {'field': ['value']}\n?             ^^^^"
+    ]
 
 
 async def test_assert_called_with_headers():
@@ -1156,11 +1156,9 @@ async def test_assert_called_with_strict_headers_fail():
         with pytest.raises(AssertionError) as exc_info:
             m.assert_called_with(url, headers={"X-Token": "wrong"}, strict_headers=True)
     assert str(exc_info.value) == (
-        "Headers mismatch: expected {'X-Token': 'wrong'}, "
-        "got {'Host': 'example.com', 'X-Token': 'abc'}\n"
-        "- {'X-Token': 'wrong'}\n"
-        "+ {'Host': 'example.com', 'X-Token': 'abc'}"
+        "Headers mismatch: expected {'X-Token': 'wrong'}, got {'Host': 'example.com', 'X-Token': 'abc'}"
     )
+    assert exc_info.value.__notes__ == ["- {'X-Token': 'wrong'}\n+ {'Host': 'example.com', 'X-Token': 'abc'}"]
 
 
 # ---------------------------------------------------------------------------
@@ -1544,11 +1542,8 @@ async def test_assert_called_with_json_when_body_not_json():
         await session.post(url, data=b"this is not json{")
         with pytest.raises(AssertionError, match="non-JSON body") as exc_info:
             m.assert_called_with(url, method="POST", json={"x": 1})
-    assert str(exc_info.value) == (
-        "Expected JSON body, got non-JSON body: expected {'x': 1}, got this is not json{\n"
-        "- {'x': 1}\n"
-        "+ this is not json{"
-    )
+    assert str(exc_info.value) == "Expected JSON body, got non-JSON body: expected {'x': 1}, got this is not json{"
+    assert exc_info.value.__notes__ == ["- {'x': 1}\n+ this is not json{"]
 
 
 async def test_assert_called_with_json_on_bodyless_request_raises_assertion_error():
