@@ -57,7 +57,7 @@ aiointercept is built primarily for `aiohttp`: its API mirrors `aioresponses`, a
 pip install aiointercept
 ```
 
-**Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13.
+**Requirements:** Python ≥ 3.11, aiohttp ≥ 3.13.
 
 For the bundled pytest fixtures, install the `pytest-asyncio` extra:
 
