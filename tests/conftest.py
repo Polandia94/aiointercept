@@ -17,7 +17,7 @@ F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
 _RETRY_DELAYS = (None, 1, 2, 4, 11)
 # Retry only transport-level failures: an AssertionError (or any other test
 # bug) must fail immediately instead of burning ~18s of retries on it.
-_RETRYABLE = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
+_RETRYABLE = (aiohttp.ClientError, TimeoutError, OSError)
 
 
 def network_retry(fn: F) -> F:
