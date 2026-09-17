@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Dropped support for Python 3.10; the minimum supported version is now Python 3.11. The CI matrix, the packaging metadata (`requires-python`, trove classifiers) and the `ruff` / `mypy` target versions all move to 3.11.
+
+### Changed
+
+- Assertion failures from `assert_called_with()` / `assert_called_once_with()` now put only the one-line `expected ... got ...` summary in the exception message and attach the detailed `difflib.ndiff` as a [PEP 678](https://peps.python.org/pep-0678/) note (`exc.__notes__`). Tracebacks and pytest still render the full diff underneath the summary, but `str(exc)` is now a single readable line. Code matching on the diff text via `str(exc)` should read `exc.__notes__` instead.
+- The body/header comparisons in `assert_called_with()` now raise `AssertionError` explicitly instead of using bare `assert` statements, so they keep working under `python -O`.
+- `__aenter__` is annotated with `typing.Self`, so `async with` on a subclass of `aiointercept` now infers the subclass rather than the base class.
+
 ## [0.1.10] - 2026-09-01
 
 ### Fixed

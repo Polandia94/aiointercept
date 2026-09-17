@@ -7,7 +7,7 @@ Install from PyPI:
 
     pip install aiointercept
 
-**Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13.
+**Requirements:** Python ≥ 3.11, aiohttp ≥ 3.13.
 
 Coming from aioresponses?
 -------------------------
