@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-09-25
+
 ### Fixed
 
 - Normalize trailing dots for exact URL matches [#120](https://github.com/Polandia94/aiointercept/pull/120). Thanks to [@tamird](https://github.com/tamird). 
