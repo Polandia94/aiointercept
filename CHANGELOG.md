@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-09-28
+
+- Guard optional pytest-asyncio fixtures [#123](https://github.com/Polandia94/aiointercept/pull/123). Thanks to [@tamird](https://github.com/tamird). 
+
 ## [0.1.11] - 2026-09-25
 
 ### Fixed
