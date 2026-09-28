@@ -92,9 +92,11 @@ Sharing the server across tests
 -------------------------------
 
 Each ``async with aiointercept()`` block starts a fresh :mod:`aiohttp.web` test
-server. The bundled pytest plugin (auto-discovered, requires ``pytest-asyncio``)
-amortizes that with a session-scoped server and a function-scoped wrapper that
-calls :meth:`~aiointercept.aiointercept.clear` between tests.
+server. The bundled pytest plugin amortizes that with a session-scoped server
+and a function-scoped wrapper that calls
+:meth:`~aiointercept.aiointercept.clear` between tests. Install the
+``pytest-asyncio`` extra described in :doc:`installation` to ensure these
+auto-discovered fixtures are available.
 
 .. code-block:: python
 

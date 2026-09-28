@@ -38,6 +38,16 @@ pip install aiointercept
 
 **Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13.
 
+For the bundled pytest fixtures, install the `pytest-asyncio` extra:
+
+```bash
+pip install 'aiointercept[pytest-asyncio]'
+```
+
+The extra requires pytest-asyncio 0.24 or newer. The plugin registers its
+fixtures only when a compatible pytest-asyncio is installed; otherwise it is
+inactive.
+
 ## Documentation
 
 Full documentation is at **[aiointercept.readthedocs.io](https://aiointercept.readthedocs.io/)**:
@@ -50,7 +60,7 @@ Full documentation is at **[aiointercept.readthedocs.io](https://aiointercept.re
 ## Sharing the server across tests
 
 Starting and stopping a server for every test adds up. `aiointercept` ships an
-auto-discovered pytest plugin (requires `pytest-asyncio`) that starts the server
+auto-discovered pytest plugin that starts the server
 **once per session** and hands each test a cleared mock via the
 `aiointercept_mock` fixture:
 
