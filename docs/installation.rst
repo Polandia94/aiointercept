@@ -9,6 +9,16 @@ Install from PyPI:
 
 **Requirements:** Python ≥ 3.10, aiohttp ≥ 3.13.
 
+For the bundled pytest fixtures, install the ``pytest-asyncio`` extra:
+
+.. code-block:: bash
+
+    pip install 'aiointercept[pytest-asyncio]'
+
+The extra requires pytest-asyncio 0.24 or newer. The plugin registers its
+fixtures only when a compatible pytest-asyncio is installed; otherwise it is
+inactive.
+
 Coming from aioresponses?
 -------------------------
 
