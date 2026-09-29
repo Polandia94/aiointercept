@@ -24,7 +24,7 @@ from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
 from yarl import URL
 
-from .compat import merge_params, normalize_url
+from .compat import merge_params, normalize_host, normalize_url
 
 # Bounds for the diff body. ``ndiff`` is O(n²) in time and memory, so we clip
 # both the per-line width (a raw body is a single very long line) and the line
@@ -175,6 +175,7 @@ def _resolution_target(host: str) -> "aiointercept | None":
     if is_ip_address(host):
         return None
 
+    host = normalize_host(host)
     instances = _active_snapshot
 
     for inst in instances:
@@ -230,7 +231,8 @@ async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> 
 def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") -> "SSLContext | None":
     instances = _active_snapshot
 
-    host = req.url.raw_host
+    if (host := req.url.raw_host) is not None:
+        host = normalize_host(host)
     url_str = str(req.url)
 
     for inst in instances:
@@ -435,8 +437,7 @@ class aiointercept:  # noqa: N801
 
         if mock_external_urls:
             for p in self._passthrough_urls:
-                host = URL(p).host
-                self._passthrough_hosts.append(host if host else p)
+                self._passthrough_hosts.append(normalize_host(URL(p).raw_host or p))
 
         self.param = param
         self.passthrough_unmatched = passthrough_unmatched
@@ -665,7 +666,7 @@ class aiointercept:  # noqa: N801
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
         url = normalize_url(request.url)
-        req_host = request.headers.get("Host", "")
+        req_host = url.raw_authority
         if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
             self._https_hosts.add(req_host)
         if req_host in self._https_hosts:
@@ -820,9 +821,9 @@ class aiointercept:  # noqa: N801
             self._patterns_list.append(url)
 
         if isinstance(url, URL):
-            host = url.host
-            if not host:
+            if not (host := url.raw_host):
                 raise ValueError(f"Cannot extract host from {url!r}")
+            host = normalize_host(host)
 
             # Map this host → our test server
             self._host_list.add(host)

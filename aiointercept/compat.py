@@ -4,6 +4,11 @@ from multidict import MultiDict
 from yarl import URL
 
 
+def normalize_host(host: str) -> str:
+    """Strip trailing dots as aiohttp does when building the Host header."""
+    return host.rstrip(".")
+
+
 def normalize_url(url: "URL | str") -> URL:
     """Normalize url to make comparisons."""
     url = URL(url)
@@ -11,7 +16,9 @@ def normalize_url(url: "URL | str") -> URL:
         url = url.with_fragment(None)
     sorted_query = sorted(url.query.items())
     # Normalize "http://host" and "http://host/" to the same key.
-    if url.host:
+    if host := url.raw_host:
+        if (normalized_host := normalize_host(host)) != host:
+            url = url.with_host(normalized_host)
         url = url.with_path(url.path or "/")
     return url.with_query(sorted_query)
 

@@ -154,12 +154,17 @@ wheels = [
 
 [[package]]
 name = "aiointercept"
-version = "0.1.10"
+version = "0.1.12"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "multidict" },
     { name = "yarl" },
+]
+
+[package.optional-dependencies]
+pytest-asyncio = [
+    { name = "pytest-asyncio" },
 ]
 
 [package.dev-dependencies]
@@ -182,8 +187,10 @@ tests = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3,<4.0.0" },
     { name = "multidict", specifier = ">=6.0,<7.0" },
+    { name = "pytest-asyncio", marker = "extra == 'pytest-asyncio'", specifier = ">=0.24.0" },
     { name = "yarl", specifier = ">=1.23.0,<2.0.0" },
 ]
+provides-extras = ["pytest-asyncio"]
 
 [package.metadata.requires-dev]
 benchmarks = [{ name = "aioresponses", specifier = ">=0.7.6,<1.0.0" }]

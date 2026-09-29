@@ -103,6 +103,28 @@ async def test_add_string_and_url_object(url_input: str | URL):
         assert resp.status == 200
 
 
+@pytest.mark.parametrize(
+    ("registered_host", "request_host"),
+    [
+        ("api.test.", "api.test."),
+        ("api.test.", "api.test"),
+        ("api.test", "api.test."),
+    ],
+)
+async def test_trailing_dot_hosts_match_exact_https_urls(registered_host: str, request_host: str) -> None:
+    """Trailing dots must not change exact-match host routing or request lookup."""
+    registered_url = f"https://{registered_host}/items"
+    request_url = f"https://{request_host}/items"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as outer:
+        outer.get(registered_url, body=b"outer")
+        async with aiointercept(mock_external_urls=True) as inner:
+            inner.get("https://other.test/items", body=b"inner")
+            response = await session.get(request_url)
+            assert response.status == 200
+            assert await response.read() == b"outer"
+        outer.assert_called_once_with(registered_url)
+
+
 async def test_add_pattern():
     """A compiled regex pattern matches any URL that satisfies the expression."""
     pattern = re.compile(r"^http://api\.test/items/\d+$")
@@ -320,18 +342,27 @@ async def test_callback_with_payload():
 # ---------------------------------------------------------------------------
 
 
-async def test_passthrough_host_is_allowed(real_upstream: TestServer):
+@pytest.mark.parametrize(
+    ("passthrough_host", "request_host"),
+    [
+        ("localhost", "localhost"),
+        ("localhost.", "localhost"),
+        ("localhost", "localhost."),
+    ],
+)
+async def test_passthrough_host_is_allowed(real_upstream: TestServer, passthrough_host: str, request_host: str) -> None:
     """Passthrough host resolves normally and reaches the (local) real server."""
-    upstream_url = f"{upstream_base(real_upstream)}/status/200"
+    upstream_url = URL(f"{upstream_base(real_upstream)}/status/200")
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[upstream_url]) as m,
+        aiointercept(mock_external_urls=True, passthrough=[str(upstream_url.with_host(passthrough_host))]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
         assert mocked.status == 200
-        real = await session.get(upstream_url)
+        real = await session.get(upstream_url.with_host(request_host))
         assert real.status == 200
+        assert await real.text() == "upstream"
 
 
 # ---------------------------------------------------------------------------

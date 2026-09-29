@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import TYPE_CHECKING
 
 try:
@@ -15,7 +16,7 @@ from .core import aiointercept
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-if pytest_asyncio is not None:
+if pytest_asyncio is not None and "loop_scope" in inspect.signature(pytest_asyncio.fixture).parameters:
 
     @pytest_asyncio.fixture(loop_scope="session", scope="session")
     async def aiointercept_server() -> AsyncIterator[aiointercept]:
