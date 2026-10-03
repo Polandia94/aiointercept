@@ -61,8 +61,10 @@ requests, and assertions all work the same way:
         m.assert_called_with(url, method="POST", json={"name": "alice"})
 
 The server runs on its own thread and event loop, so blocking clients like
-``requests`` or ``httpx.Client`` can be called directly from an async test
-without deadlocking.
+``requests`` or ``httpx.Client`` can be called directly from an async test when
+using static responses or synchronous callbacks. Async callbacks run on the
+test's event loop; with those, offload the blocking client call (for example,
+with ``asyncio.to_thread``) to avoid deadlocking.
 
 .. note::
 

@@ -32,7 +32,7 @@ Testing code that makes HTTP requests usually means either hitting a real server
 
 ## Using other HTTP clients
 
-With the default `mock_external_urls=False`, the mock is a plain HTTP server, so `requests`, `httpx` (sync or async), or any other client can call `m.server_url`. The server runs on its own thread, so blocking clients work from async tests:
+With the default `mock_external_urls=False`, the mock is a plain HTTP server, so `requests`, `httpx` (sync or async), or any other client can call `m.server_url`. The server runs on its own thread, so blocking clients work directly from async tests with static responses or synchronous callbacks. When using an async callback, offload the blocking client call so the test's event loop remains available:
 
 ```python
 import httpx
