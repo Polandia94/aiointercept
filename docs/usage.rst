@@ -30,6 +30,52 @@ Use ``m.server_url`` as a ``base_url`` to keep your code clean:
         async with aiohttp.ClientSession(base_url=m.server_url) as session:
             resp = await session.get("/api/users")
 
+Using other HTTP clients
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+In this mode the mock is a plain HTTP server, so any client can talk to
+``m.server_url`` — not just aiohttp. Registered responses, callbacks, recorded
+requests, and assertions all work the same way:
+
+.. code-block:: python
+
+    import httpx
+    import requests
+
+    async with aiointercept() as m:
+        url = f"{m.server_url}/users"
+        m.post(url, status=201, payload={"id": 1}, repeat=True)
+
+        # requests
+        resp = requests.post(url, json={"name": "alice"})
+        assert resp.json() == {"id": 1}
+
+        # httpx, sync
+        with httpx.Client() as client:
+            resp = client.post(url, json={"name": "alice"})
+
+        # httpx, async
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json={"name": "alice"})
+
+        m.assert_called_with(url, method="POST", json={"name": "alice"})
+
+The server runs on its own thread and event loop, so blocking clients like
+``requests`` or ``httpx.Client`` can be called directly from an async test
+without deadlocking.
+
+.. note::
+
+    aiointercept is built primarily for aiohttp: its API mirrors
+    ``aioresponses``, and only ``mock_external_urls=False`` works with other
+    clients. ``mock_external_urls=True`` intercepts by patching aiohttp's
+    ``TCPConnector``, so requests made with httpx or requests to real hostnames
+    are **not** intercepted. Other clients are supported as a convenience — if
+    your project uses only httpx or requests,
+    `respx <https://lundberg.github.io/respx/>`_ or
+    `responses <https://github.com/getsentry/responses>`_ are likely a better
+    fit.
+
 ``mock_external_urls=True``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

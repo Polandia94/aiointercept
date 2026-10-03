@@ -30,6 +30,27 @@ Testing code that makes HTTP requests usually means either hitting a real server
 - **Inspectable requests.** Callbacks receive a real `aiohttp.web.Request` — read the body, headers, and query params the server saw.
 - **Minimal patching.** The default mode touches nothing globally. When you need to intercept hardcoded URLs, only the DNS resolver is patched, so redirects and connection pooling still behave as in production.
 
+## Using other HTTP clients
+
+With the default `mock_external_urls=False`, the mock is a plain HTTP server, so `requests`, `httpx` (sync or async), or any other client can call `m.server_url`. The server runs on its own thread, so blocking clients work from async tests:
+
+```python
+import httpx
+import requests
+
+async with aiointercept() as m:
+    m.get(f"{m.server_url}/users", payload=[{"id": 1}], repeat=True)
+
+    assert requests.get(f"{m.server_url}/users").json() == [{"id": 1}]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{m.server_url}/users")
+        assert resp.json() == [{"id": 1}]
+```
+
+aiointercept is built primarily for `aiohttp`: its API mirrors `aioresponses`, and intercepting hardcoded URLs (`mock_external_urls=True`) only works with aiohttp. 
+
+
 ## Installation
 
 ```bash

@@ -106,7 +106,9 @@ show_missing = true
 tests = [
     "pytest (>=9.0.2,<10.0.0)",
     "ddt (>=1.7.2,<2.0.0)",
-    "pytest-asyncio (>=1.3.0,<2.0.0)"
+    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "httpx>=0.28.1",
+    "requests>=2.34.2",
 ]
 dev = [
     "ruff (>=0.16.0,<0.17.0)",

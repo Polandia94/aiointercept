@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Document and test using non-aiohttp clients (`requests`, sync and async `httpx`) against `m.server_url` with `mock_external_urls=False`.
+
 ## [0.1.12] - 2026-09-28
 
 - Guard optional pytest-asyncio fixtures [#123](https://github.com/Polandia94/aiointercept/pull/123). Thanks to [@tamird](https://github.com/tamird). 
