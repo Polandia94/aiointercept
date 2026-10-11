@@ -188,7 +188,7 @@ tests = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3,<4.0.0" },
-    { name = "multidict", specifier = ">=6.0,<7.0" },
+    { name = "multidict", specifier = ">=6.0,<8.0" },
     { name = "pytest-asyncio", marker = "extra == 'pytest-asyncio'", specifier = ">=0.24.0" },
     { name = "yarl", specifier = ">=1.23.0,<2.0.0" },
 ]
