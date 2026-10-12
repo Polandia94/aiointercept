@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-12
+
 ### Added
 
 - Document and test using non-aiohttp clients (`requests`, sync and async `httpx`) against `m.server_url` with `mock_external_urls=False`.

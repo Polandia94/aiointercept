@@ -135,7 +135,7 @@ wheels = [
 
 [[package]]
 name = "aiointercept"
-version = "0.1.12"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
