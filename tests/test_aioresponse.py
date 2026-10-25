@@ -11,7 +11,6 @@ from aiohttp import hdrs, http
 from http import HTTPStatus
 from aiohttp.client import ClientSession
 from aiohttp.client_reqrep import ClientResponse
-from ddt import data, ddt, unpack  # type: ignore[import-untyped]
 from yarl import URL
 
 try:
@@ -31,7 +30,6 @@ from tests.conftest import network_retry
 from .base import AsyncTestCase
 
 
-@ddt
 class AIOResponsesTestCase(AsyncTestCase):
     async def setup(self):
         self.url = "http://example.com/api?foo=bar"  # removed fragment
@@ -50,20 +48,20 @@ class AIOResponsesTestCase(AsyncTestCase):
     async def request(self, url: str):
         return await self.session.get(url)
 
-    @data(
-        hdrs.METH_HEAD,
-        hdrs.METH_GET,
-        hdrs.METH_POST,
-        hdrs.METH_PUT,
-        hdrs.METH_PATCH,
-        hdrs.METH_DELETE,
-        hdrs.METH_OPTIONS,
-    )
-    @patch("aiointercept.aiointercept.add")
-    async def test_shortcut_method(self, http_method, mocked):
-        async with aiointercept(True) as m:
-            getattr(m, http_method.lower())(self.url)
-            mocked.assert_called_once_with(self.url, method=http_method)
+    async def test_shortcut_method(self):
+        for http_method in (
+            hdrs.METH_HEAD,
+            hdrs.METH_GET,
+            hdrs.METH_POST,
+            hdrs.METH_PUT,
+            hdrs.METH_PATCH,
+            hdrs.METH_DELETE,
+            hdrs.METH_OPTIONS,
+        ):
+            with self.subTest(http_method=http_method), patch("aiointercept.aiointercept.add") as mocked:
+                async with aiointercept(True) as m:
+                    getattr(m, http_method.lower())(self.url)
+                    mocked.assert_called_once_with(self.url, method=http_method)
 
     @aiointercept(True)
     async def test_returned_instance(self, m):
@@ -78,18 +76,16 @@ class AIOResponsesTestCase(AsyncTestCase):
         self.assertIsInstance(response, ClientResponse)
         self.assertEqual(response.status, 204)
 
-    @unpack
-    @data(
-        ("http://example.com", "/api?foo=bar#fragment"),
-        ("http://example.com/", "/api?foo=bar#fragment"),
-    )
     @aiointercept(True)
-    async def test_base_url(self, base_url, relative_url, m):
-        m.get(self.url, status=200)
-        await self.session.close()  # replace the session created  setup
-        self.session = ClientSession(base_url=base_url)
-        response = await self.session.get(relative_url)
-        self.assertEqual(response.status, 200)
+    async def test_base_url(self, m):
+        m.get(self.url, status=200, repeat=True)
+        relative_url = "/api?foo=bar#fragment"
+        for base_url in ("http://example.com", "http://example.com/"):
+            with self.subTest(base_url=base_url):
+                await self.session.close()  # replace the session created in setup
+                self.session = ClientSession(base_url=base_url)
+                response = await self.session.get(relative_url)
+                self.assertEqual(response.status, 200)
 
     @aiointercept(True)
     async def test_session_headers(self, m):
