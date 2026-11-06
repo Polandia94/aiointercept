@@ -61,6 +61,13 @@ jobs:
       - name: Pin aiohttp version
         run: uv pip install aiohttp==${{ matrix.aiohttp-version }}
 
+      # Python 3.16 removed the asyncio policy API. pytest-asyncio's fix
+      # (pytest-dev/pytest-asyncio#1593) is merged but not released yet.
+      # TODO: drop this step once a release with the fix is out.
+      - name: Install pytest-asyncio with Python 3.16 fix
+        if: matrix.python-version == '3.16'
+        run: uv pip install "pytest-asyncio @ git+https://github.com/pytest-dev/pytest-asyncio@47bbcba3cce21f2a77826d9ca56147b99004166b"
+
       # --no-sync: a plain `uv run` re-syncs the venv to the lockfile, which
       # would silently revert the aiohttp pin above.
       - name: Tests
