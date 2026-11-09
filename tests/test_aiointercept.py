@@ -205,6 +205,42 @@ async def test_repeat_true_infinite():
             assert resp.status == 200
 
 
+async def test_repeat_true_after_finite_serves_finite_first():
+    """A repeat=True registered after a finite one is served only once the finite one is consumed."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(3)]
+    assert statuses == [500, 200, 200]
+
+
+async def test_repeat_true_after_two_finite_serves_them_in_order():
+    """Several finite responses queued before repeat=True are served in order, then the repeating one."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=503)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating tail: it would never be reached."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201)
+
+
+async def test_second_repeat_true_raises():
+    """A second repeat=True for the same URL and method raises instead of replacing the first."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201, repeat=True)
+
+
 async def test_repeat_false_once():
     """repeat=False (default) consumes the handler after a single call; subsequent calls raise."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
@@ -275,6 +311,36 @@ async def test_pattern_repeat_integer():
         assert resp.status == 200
         resp = await session.get("http://pat.test/path")
         assert resp.status == 200
+
+
+async def test_pattern_repeat_true_after_finite_serves_finite_first():
+    """A pattern registered with repeat=True after finite ones becomes the tail of the queue."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=503)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        statuses = [(await session.get(f"http://pat.test/path{i}")).status for i in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_pattern_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating pattern tail."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201)
+
+
+async def test_pattern_second_repeat_true_raises():
+    """A second repeat=True for the same pattern and method raises instead of replacing the first."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201, repeat=True)
 
 
 async def test_pattern_repeat_error_mixing_repeat_true_and_list():
