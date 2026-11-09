@@ -119,6 +119,9 @@ class AiointerceptRequest(web.Request):
     kwargs: AiointerceptRequestKwargs
     canonical_url: URL
 
+    # Extend aiohttp's allow-list so its dev-mode ``Request.__setattr__`` stays quiet.
+    ATTRS = web.Request.ATTRS | frozenset({"captured_body", "kwargs", "canonical_url"})
+
     @classmethod
     def upgrade(
         cls,
@@ -127,11 +130,13 @@ class AiointerceptRequest(web.Request):
         kwargs: "AiointerceptRequestKwargs",
         canonical_url: URL,
     ) -> Self:
-        request.__class__ = cls
-        request.captured_body = captured_body
-        request.kwargs = kwargs
-        request.canonical_url = canonical_url
-        return cast("Self", request)
+        # Bypass Request.__setattr__, which warns about ``__class__`` in dev mode.
+        object.__setattr__(request, "__class__", cls)
+        upgraded = cast("Self", request)
+        upgraded.captured_body = captured_body
+        upgraded.kwargs = kwargs
+        upgraded.canonical_url = canonical_url
+        return upgraded
 
 
 logger = logging.getLogger(__name__)
