@@ -1525,12 +1525,13 @@ async def test_exception_only_registration_raises_connection_error():
 
 
 # ---------------------------------------------------------------------------
-# clear() resets _https_hosts
+# clear() and the per-connection HTTPS scheme
 # ---------------------------------------------------------------------------
 
 
 async def test_clear_resets_https_hosts():
-    """After clear(), a host previously seen as HTTPS is no longer treated as HTTPS."""
+    """After clear(), a plain-HTTP request on a new connection to a host previously
+    seen as HTTPS is no longer treated as HTTPS."""
     async with aiointercept(mock_external_urls=False) as m:
         m.get("https://secure.test/data", status=200, body=b"secret")
         async with ClientSession() as session:
@@ -1539,10 +1540,7 @@ async def test_clear_resets_https_hosts():
                 headers={"Host": "secure.test", "X-Aiointercept-Orig-Scheme": "https"},
             )
 
-        assert "secure.test" in m._https_hosts
-
         m.clear()
-        assert "secure.test" not in m._https_hosts
 
         m.get("http://secure.test/data", status=404, body=b"gone")
         async with ClientSession() as session:
@@ -1553,21 +1551,7 @@ async def test_clear_resets_https_hosts():
                 headers={"Host": "secure.test"},
             )
             assert resp.status == 404
-
-
-async def test_add_https_url_populates_https_hosts():
-    """Registering an HTTPS URL eagerly tags the host as HTTPS, even before any
-    request triggers the SSL hook. This is what lets keep-alive connections
-    survive a clear() + re-add cycle."""
-    async with aiointercept(mock_external_urls=True) as m:
-        m.get("https://secure.test/data", status=200, body=b"ok")
-        assert "secure.test" in m._https_hosts
-
-        m.clear()
-        assert "secure.test" not in m._https_hosts
-
-        m.get("https://secure.test/data", status=200, body=b"ok")
-        assert "secure.test" in m._https_hosts
+        assert list(m.requests) == [("GET", URL("http://secure.test/data"))]
 
 
 async def test_clear_then_readd_https_works_over_keepalive():
@@ -1575,9 +1559,9 @@ async def test_clear_then_readd_https_works_over_keepalive():
     that reuses the existing keep-alive connection used to fail with
     ServerDisconnectedError. aiohttp only invokes the SSL-context hook on fresh
     TCP connections, so keep-alive reuses skipped the
-    X-Aiointercept-Orig-Scheme header injection that populated _https_hosts —
-    and clear() had wiped the cached entry. Now add() repopulates it eagerly
-    from the registered URL's scheme."""
+    X-Aiointercept-Orig-Scheme header injection, and clear() had wiped the
+    host-level cache. The scheme is now remembered per connection, which
+    clear() does not touch."""
     async with aiointercept(mock_external_urls=True) as m:
         m.post("https://secure.test/graphql", payload={"data": "first"}, repeat=True)
         async with ClientSession() as session:
