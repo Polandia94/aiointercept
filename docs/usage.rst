@@ -81,7 +81,8 @@ with ``asyncio.to_thread``) to avoid deadlocking.
 ``mock_external_urls=True``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Patches the DNS resolver at the **process level** so every aiohttp request is
+Patches aiohttp's ``TCPConnector`` at the **process level** (host resolution,
+TLS context selection and pooled-connection reuse) so every aiohttp request is
 redirected to the mock server — even those made by third-party libraries you
 cannot modify.
 
@@ -96,8 +97,20 @@ cannot modify.
 
 .. warning::
 
-    DNS patching affects the whole process for the duration of the block. It
-    does not intercept requests to bare IP addresses.
+    The patches affect the whole process for the duration of the block. They
+    do not intercept requests to bare IP addresses.
+
+.. warning::
+
+    Mocked ``https://`` hosts do not use TLS. The client talks plain HTTP to
+    the local mock server, and the original ``https://`` scheme is restored on
+    the recorded request and on the URL passed to callbacks. Certificate
+    validation, ``ssl=`` options, fingerprint pinning and client certificates
+    are therefore not exercised for mocked hosts.
+
+    Requests proxied to the real network by ``passthrough_unmatched=True`` are
+    re-sent by the mock with default certificate verification; the client's own
+    ``ssl=`` options do not apply to that upstream connection.
 
 
 Registering mock responses
