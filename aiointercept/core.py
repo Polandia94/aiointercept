@@ -22,6 +22,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -744,7 +745,7 @@ class aiointercept:  # noqa: N801
                 async with session.request(
                     method=request.method,
                     url=real_url,
-                    headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
+                    headers=CIMultiDict((k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP),
                     data=getattr(request, "captured_body", None) or None,
                     # Relay redirects untouched so the *client's* redirect
                     # handling (allow_redirects, history) behaves as it would
@@ -755,7 +756,9 @@ class aiointercept:  # noqa: N801
                     body = await real_resp.read()
                     return web.Response(
                         status=real_resp.status,
-                        headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
+                        headers=CIMultiDict(
+                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                        ),
                         body=body,
                     )
             warning_msg = self._diagnose_unmatched(req_method, str(url))
