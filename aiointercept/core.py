@@ -357,6 +357,8 @@ class MockResponse:
     def __init__(self, handler: handler_type) -> None:
         self._handler = handler
         self.call_count: int = 0
+        # True for a repeat=True registration: served forever, never popped from a queue.
+        self._repeat = False
 
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
@@ -707,6 +709,8 @@ class aiointercept:  # noqa: N801
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: MockResponse | None = None
+            elif selected_handler[0]._repeat:
+                handler = selected_handler[0]
             else:
                 handler = selected_handler.pop(0)
 
@@ -723,7 +727,9 @@ class aiointercept:  # noqa: N801
                     if isinstance(pattern_handler, list):
                         handler = pattern_handler[0]
                         remaining = pattern_handler[1:]
-                        if remaining:
+                        if handler._repeat:
+                            pass  # repeating tail: keep serving it
+                        elif remaining:
                             self.patterns_handler[pattern, req_method] = remaining
                         else:
                             del self.patterns_handler[pattern, req_method]
@@ -905,42 +911,39 @@ class aiointercept:  # noqa: N801
         raw: handler_type = handler if not exception else _CLOSE_CONNECTION
         mock_response = MockResponse(raw)
         if repeat is True:
-            if isinstance(url, Pattern):
-                self.patterns_handler[url, method] = mock_response
-                return mock_response
-            handler_url = str(normalize_url(url))
-            self.handlers[handler_url, method] = mock_response
+            # Served forever. If finite responses are already queued it becomes
+            # the tail of that queue; nothing can be queued behind it.
+            mock_response._repeat = True
+            handlers: list[MockResponse] = [mock_response]
         else:
             if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
-            handlers: list[MockResponse] = [mock_response] * repeat
-            if isinstance(url, Pattern):
-                if (url, method) in self.patterns_handler:
-                    list_pattern_handler = self.patterns_handler[(url, method)]
-                    if isinstance(list_pattern_handler, list):
-                        list_pattern_handler += handlers
-                    else:
-                        raise ValueError(
-                            f"Existing handler for pattern {url} {method} has "
-                            "repeat=True, cannot add more handlers to it."
-                        )
-
-                else:
-                    self.patterns_handler[url, method] = handlers
-                return mock_response
-            handler_url = str(normalize_url(url))
-            if (handler_url, method) in self.handlers:
-                handlers_list = self.handlers[(handler_url, method)]
-                if isinstance(handlers_list, list):
-                    handlers_list += handlers
+            handlers = [mock_response] * repeat
+        if isinstance(url, Pattern):
+            if (url, method) in self.patterns_handler:
+                list_pattern_handler = self.patterns_handler[(url, method)]
+                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                    list_pattern_handler += handlers
                 else:
                     raise ValueError(
-                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                        f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.handlers[handler_url, method] = handlers
+                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+            return mock_response
+        handler_url = str(normalize_url(url))
+        if (handler_url, method) in self.handlers:
+            handlers_list = self.handlers[(handler_url, method)]
+            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+                handlers_list += handlers
+            else:
+                raise ValueError(
+                    f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                )
+        else:
+            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
