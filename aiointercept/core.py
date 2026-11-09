@@ -142,6 +142,12 @@ _PROXY_REQ_DROP = frozenset(("host", "transfer-encoding", "x-aiointercept-orig-s
 # the relayed response — aiohttp keeps an explicit Content-Length header as-is.
 _PROXY_RESP_DROP = frozenset(("transfer-encoding", "content-encoding", "content-length"))
 
+
+class _SelfProxyError(Exception):
+    """Raised by the bypass connector when a passthrough target resolves to the
+    mock server itself; proxying it would loop back into ``_dispatch``."""
+
+
 # Module-level state for class-level patches shared across concurrent instances.
 # Only the first entering instance installs the patches; the last exiting one removes them.
 _patch_lock = threading.Lock()
@@ -631,13 +637,19 @@ class aiointercept:  # noqa: N801
         _orig_resolve_host = _real_resolve_host
         _orig_ssl_ctx = _real_ssl_context
         _orig_get = _real_get
+        own_address = (self.server_host, self.server_port)
 
         class _BypassConnector(aiohttp.TCPConnector):
             """Connector wired to the saved originals so proxied requests
             resolve, pool, and encrypt against the real network."""
 
             async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
-                return await _orig_resolve_host(self, host, port, traces)  # type: ignore[no-any-return]
+                # The original short-circuits IP literals into a result too, so
+                # this sees 127.0.0.1:{port} as well as any name resolving to it.
+                results: list[ResolveResult] = await _orig_resolve_host(self, host, port, traces)
+                if any((r["host"], r["port"]) == own_address for r in results):
+                    raise _SelfProxyError
+                return results
 
             def _get_ssl_context(self, req: ClientRequest) -> SSLContext | None:
                 return _orig_ssl_ctx(self, req)  # type: ignore[no-any-return] # pyright: ignore[reportPrivateUsage]
@@ -732,6 +744,7 @@ class aiointercept:  # noqa: N801
                     break
 
         if handler is None:
+            warning_msg: str | None = None
             if self._mock_external_urls and self.passthrough_unmatched:
                 scheme = request.headers.get("X-Aiointercept-Orig-Scheme") or ("https" if request.secure else "http")
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
@@ -741,24 +754,30 @@ class aiointercept:  # noqa: N801
                     # the server loop, which is the loop the session must bind
                     # to, and there is no await between check and assignment.
                     session = self._bypass_session = self._make_bypass_session()
-                async with session.request(
-                    method=request.method,
-                    url=real_url,
-                    headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
-                    data=getattr(request, "captured_body", None) or None,
-                    # Relay redirects untouched so the *client's* redirect
-                    # handling (allow_redirects, history) behaves as it would
-                    # against the real network.
-                    allow_redirects=False,
-                    ssl=True,
-                ) as real_resp:
-                    body = await real_resp.read()
-                    return web.Response(
-                        status=real_resp.status,
-                        headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
-                        body=body,
+                try:
+                    async with session.request(
+                        method=request.method,
+                        url=real_url,
+                        headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
+                        data=getattr(request, "captured_body", None) or None,
+                        # Relay redirects untouched so the *client's* redirect
+                        # handling (allow_redirects, history) behaves as it would
+                        # against the real network.
+                        allow_redirects=False,
+                        ssl=True,
+                    ) as real_resp:
+                        body = await real_resp.read()
+                        return web.Response(
+                            status=real_resp.status,
+                            headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
+                            body=body,
+                        )
+                except _SelfProxyError:
+                    warning_msg = (
+                        f"aiointercept: no handler for {req_method} {url} — "
+                        "the request targeted the mock server itself and was not proxied"
                     )
-            warning_msg = self._diagnose_unmatched(req_method, str(url))
+            warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
             if request.transport:
