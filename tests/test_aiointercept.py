@@ -12,7 +12,7 @@ from unittest import mock
 
 import aiohttp
 import pytest
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 from aiohttp.abc import AbstractResolver
 from aiohttp.client_exceptions import ClientConnectionError
 from aiohttp.connector import TCPConnector
@@ -974,6 +974,23 @@ async def test_redirect_followed():
         assert len(resp.history) == 1
 
 
+async def test_redirect_http_to_https_same_host():
+    """An http:// -> https:// redirect on one host serves the 301 first: the
+    plain-HTTP request must not be treated as HTTPS just because the host also
+    has an https:// handler."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        first = m.get("http://example.com/", status=301, headers={"Location": "https://example.com/"})
+        second = m.get("https://example.com/", body=b"secure")
+        resp = await session.get("http://example.com/")
+        assert resp.status == 200
+        assert await resp.read() == b"secure"
+        assert len(resp.history) == 1
+        assert first.call_count == 1
+        assert second.call_count == 1
+        assert ("GET", URL("http://example.com/")) in m.requests
+        assert ("GET", URL("https://example.com/")) in m.requests
+
+
 async def test_redirect_missing_mock_raises():
     """A redirect whose Location is not mocked raises ClientConnectionError."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
@@ -1122,6 +1139,91 @@ async def test_https_request_recorded_under_https_scheme():
         http_key = ("GET", URL("http://secure.test/data"))
         assert https_key in m.requests, "request must be recorded under https:// scheme"
         assert http_key not in m.requests, "should not appear under http:// when orig scheme is https"
+
+
+async def test_http_and_https_handlers_on_same_host():
+    """An http:// handler stays reachable when the same host also has an https:// handler."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.com/a", body=b"plain")
+        m.get("https://example.com/b", body=b"secure")
+        resp = await session.get("http://example.com/a")
+        assert resp.status == 200
+        assert await resp.read() == b"plain"
+        resp = await session.get("https://example.com/b")
+        assert resp.status == 200
+        assert await resp.read() == b"secure"
+        assert ("GET", URL("http://example.com/a")) in m.requests
+        assert ("GET", URL("https://example.com/b")) in m.requests
+
+
+async def test_consecutive_https_requests_on_keepalive_recorded_as_https():
+    """Every request on a kept-alive HTTPS connection is recorded under https://,
+    not only the first one (which is the only one carrying the scheme header)."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post("https://secure.test/one", body=b"1")
+        m.post("https://secure.test/two", body=b"2")
+        resp = await session.post("https://secure.test/one")
+        assert await resp.read() == b"1"
+        resp = await session.post("https://secure.test/two")
+        assert await resp.read() == b"2"
+        assert list(m.requests) == [
+            ("POST", URL("https://secure.test/one")),
+            ("POST", URL("https://secure.test/two")),
+        ]
+
+
+async def test_https_nondefault_port_keepalive_after_clear():
+    """A kept-alive HTTPS connection to a non-default port keeps its scheme after
+    clear() + re-add (POST, so aiohttp's idempotent retry cannot mask a failure)."""
+    url = "https://example.com:8443/a"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, body=b"1")
+        resp = await session.post(url)
+        assert await resp.read() == b"1"
+        m.clear()
+        m.post(url, body=b"2")
+        resp = await session.post(url)
+        assert resp.status == 200
+        assert await resp.read() == b"2"
+        assert list(m.requests) == [("POST", URL(url))]
+
+
+async def test_https_passthrough_on_keepalive_not_downgraded_to_http():
+    """An unmatched HTTPS request on a kept-alive connection must be proxied
+    upstream over https://, never downgraded to cleartext http://.
+
+    The upstream here speaks plain HTTP only, so a correct proxy fails to reach
+    it (the client sees an error) and the upstream records no request."""
+    received: list[tuple[str, str]] = []
+
+    async def record(request: web.Request) -> web.Response:
+        received.append((request.method, request.path))
+        return web.Response(text="cleartext")
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", record)
+    upstream = TestServer(app)
+    await upstream.start_server()
+    try:
+        base = f"https://localhost:{upstream.port}"
+        async with (
+            ClientSession() as session,
+            aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+        ):
+            m.get(f"{base}/mocked", body=b"mocked")
+            resp = await session.get(f"{base}/mocked")  # new connection: scheme header injected
+            assert await resp.read() == b"mocked"
+            # Same session and host: the kept-alive connection is reused, no header.
+            try:
+                resp = await session.get(f"{base}/status/200")
+            except ClientConnectionError:
+                pass
+            else:
+                assert resp.status != 200
+            assert ("GET", URL(f"{base}/status/200")) in m.requests
+        assert received == [], f"upstream received a cleartext request: {received}"
+    finally:
+        await upstream.close()
 
 
 async def test_duplicate_query_keys_preserved_in_callback():
