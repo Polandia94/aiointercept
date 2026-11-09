@@ -5,6 +5,9 @@ import concurrent.futures
 import logging
 import re
 import socket
+import subprocess
+import sys
+import textwrap
 import threading
 from io import BytesIO
 from random import uniform
@@ -823,6 +826,44 @@ async def test_requests_dict_populated():
         key = ("GET", URL(url))
         assert key in m.requests
         assert len(m.requests[key]) == 2
+
+
+_DEV_MODE_SCRIPT = textwrap.dedent(
+    """
+    import asyncio
+
+    import aiohttp
+
+    from aiointercept import aiointercept
+
+
+    async def main() -> None:
+        async with aiohttp.ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+            m.get("http://example.com/dev", status=200, body="ok")
+            async with session.get("http://example.com/dev") as resp:
+                print("STATUS", resp.status)
+
+
+    asyncio.run(main())
+    """
+)
+
+
+def test_mocked_request_succeeds_in_dev_mode():
+    """aiohttp's dev-mode ``Request.__setattr__`` warns on custom attributes; upgrading must not trigger it.
+
+    ``web.Request.DEBUG`` is fixed at import time, so this runs a subprocess under ``-X dev``.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-X", "dev", "-W", "error::DeprecationWarning", "-c", _DEV_MODE_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    detail = f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "STATUS 200" in proc.stdout, detail
+    assert proc.returncode == 0, detail
 
 
 # ---------------------------------------------------------------------------
