@@ -865,6 +865,25 @@ async def test_requests_dict_populated():
         assert len(m.requests[key]) == 2
 
 
+async def test_aborted_upload_is_not_recorded():
+    """A client that disconnects mid-body leaves no empty entry behind in m.requests."""
+    async with aiointercept() as m:
+        sock = socket.create_connection((m.server_host, m.server_port), timeout=2)
+        try:
+            head = f"POST /upload HTTP/1.1\r\nHost: {m.server_host}:{m.server_port}\r\nContent-Length: 1000\r\n\r\n"
+            sock.sendall(head.encode() + b"abc")
+        finally:
+            sock.close()
+        # The server runs on its own thread: poll briefly for it to notice the disconnect.
+        for _ in range(20):
+            if m.requests:
+                break
+            await asyncio.sleep(0.05)
+        assert m.requests == {}
+        assert m.ordered_requests == []
+        m.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # HEAD method
 # ---------------------------------------------------------------------------
