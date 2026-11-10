@@ -103,6 +103,19 @@ async def test_add_string_and_url_object(url_input: str | URL):
         assert resp.status == 200
 
 
+async def test_url_registered_with_credentials_matches():
+    """A URL registered with user:pass matches; aiohttp moves the credentials into an Authorization header."""
+    url = "http://user:pass@example.com/x"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url, status=200)
+        resp = await session.get(url)
+        assert resp.status == 200
+        (_, req) = m.ordered_requests[0]
+        assert req.headers["Authorization"] == "Basic dXNlcjpwYXNz"
+        m.assert_called_with(url)
+        m.assert_called_with("http://example.com/x")
+
+
 @pytest.mark.parametrize(
     ("registered_host", "request_host"),
     [

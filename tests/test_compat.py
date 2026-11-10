@@ -66,6 +66,10 @@ def test_base_without_params_returns_corrected_url(as_str):
             "https://example.com/api?var=%D0%BF%D1%83%D1%82%D1%8C",
             id="non-ascii-pre-encoded",
         ),
+        pytest.param("http://user:pass@h/x", "http://h/x", id="userinfo"),
+        pytest.param("http://user@h/x", "http://h/x", id="user-only"),
+        pytest.param("http://user:pass@h:8080/x", "http://h:8080/x", id="userinfo-with-port"),
+        pytest.param("http://user:pass@h/x?b=2&a=1", "http://h/x?a=1&b=2", id="userinfo-with-query"),
     ],
 )
 def test_normalize_url(original_url, expected_url, as_str):
