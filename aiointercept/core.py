@@ -1102,8 +1102,7 @@ class aiointercept:  # noqa: N801
                 if actual_body != expected_body:
                     raise _mismatch("Body mismatch", expected_body, actual_body)
         if strict_headers:
-            actual_headers = dict(request.headers)
-            actual_headers.pop("x-aiointercept-orig-scheme", None)
+            actual_headers = {k: v for k, v in request.headers.items() if k.lower() != "x-aiointercept-orig-scheme"}
             expected_headers = headers or {}
             if expected_headers != actual_headers:
                 raise _mismatch("Headers mismatch", dict(expected_headers), dict(actual_headers))

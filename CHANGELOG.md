@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- `assert_called_with(..., strict_headers=True)` now ignores the internal scheme header on HTTPS requests.
 
 ## [1.0.0] - 2026-10-12
 
