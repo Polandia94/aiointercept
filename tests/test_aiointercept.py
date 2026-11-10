@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import re
 import socket
@@ -322,6 +323,79 @@ async def test_async_callback():
         m.get("http://cb.test/async", callback=cb)
         resp = await session.get("http://cb.test/async")
         assert resp.status == 203
+
+
+async def test_async_callable_object_callback_runs_on_test_loop():
+    """An object with ``async def __call__`` is awaited on the caller's loop."""
+    test_loop = asyncio.get_running_loop()
+    seen: list[asyncio.AbstractEventLoop] = []
+
+    class AsyncCallable:
+        async def __call__(self, url, **kwargs):
+            seen.append(asyncio.get_running_loop())
+            return CallbackResult(status=200, body=b"cb-object")
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://cb.test/obj", callback=AsyncCallable())
+        resp = await session.get("http://cb.test/obj")
+        assert resp.status == 200
+        assert await resp.read() == b"cb-object"
+    assert seen == [test_loop]
+
+
+async def test_partial_of_async_callback():
+    """``functools.partial`` around an async function is awaited."""
+
+    async def cb(prefix, url, **kwargs):
+        return CallbackResult(status=200, body=prefix + b"-partial")
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://cb.test/partial", callback=functools.partial(cb, b"x"))
+        resp = await session.get("http://cb.test/partial")
+        assert resp.status == 200
+        assert await resp.read() == b"x-partial"
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_callback_returning_none_serves_registered_response(is_async):
+    """A callback returning None falls back to the registered response (like aioresponses)."""
+    calls = []
+
+    def sync_cb(url, **kwargs):
+        calls.append(url)
+
+    async def async_cb(url, **kwargs):
+        calls.append(url)
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(
+            "http://cb.test/none",
+            status=201,
+            payload={"ok": True},
+            headers={"X-Test": "1"},
+            reason="Made",
+            callback=async_cb if is_async else sync_cb,
+        )
+        resp = await session.get("http://cb.test/none")
+        assert resp.status == 201
+        assert resp.reason == "Made"
+        assert resp.headers["X-Test"] == "1"
+        assert await resp.json() == {"ok": True}
+    assert len(calls) == 1
+
+
+async def test_callback_returning_invalid_value_fails_clearly(caplog):
+    """A callback returning something other than CallbackResult/None gives a clear error."""
+
+    def bad_callback(url, **kwargs):
+        return "nope"
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://cb.test/bad", callback=bad_callback)
+        resp = await session.get("http://cb.test/bad")
+        assert resp.status == 500
+    assert "bad_callback" in caplog.text
+    assert "must return a CallbackResult" in caplog.text
 
 
 async def test_callback_with_payload():
