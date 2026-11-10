@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.aiointercept_ref || github.ref }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v7.1.0
         with:
@@ -39,6 +40,7 @@ jobs:
           ref: master
           path: aiohttp-src
           submodules: recursive
+          persist-credentials: false
 
       # The git tree ships neither the Cython-generated .c files nor the
       # generated llhttp sources, so generate them the way aiohttp's own CI
