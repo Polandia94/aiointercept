@@ -28,7 +28,7 @@ Testing code that makes HTTP requests usually means either hitting a real server
 
 - **Real serialization.** Headers, body encoding, and content-type negotiation all go through the actual aiohttp stack.
 - **Inspectable requests.** Callbacks receive a real `aiohttp.web.Request` — read the body, headers, and query params the server saw.
-- **Minimal patching.** The default mode touches nothing globally. When you need to intercept hardcoded URLs, only the DNS resolver is patched, so redirects and connection pooling still behave as in production.
+- **Minimal patching.** The default mode touches nothing globally. With `mock_external_urls=True`, three `TCPConnector` methods are patched while the mock is active (host resolution, TLS context selection, pooled-connection reuse). Requests still go through aiohttp's real client stack, so redirects and connection pooling behave as in production. Mocked `https://` hosts are served without TLS; see the [usage guide](https://aiointercept.readthedocs.io/en/latest/usage.html) for details.
 
 ## Using other HTTP clients
 
