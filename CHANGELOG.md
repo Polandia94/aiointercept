@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- Mocked requests no longer fail with HTTP 500 under `python -X dev` (or `PYTHONASYNCIODEBUG=1`) when warnings are errors: aiohttp's dev-mode `DeprecationWarning` about custom `Request` attributes is no longer triggered.
 
 ## [1.0.0] - 2026-10-12
 
