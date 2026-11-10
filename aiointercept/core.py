@@ -186,7 +186,7 @@ def _resolution_target(host: str) -> "aiointercept | None":
     instances = _active_snapshot
 
     for inst in instances:
-        if host in inst._host_list or inst._patterns_list:
+        if host in inst._host_list or (inst._patterns_list and host not in inst._passthrough_hosts):
             return inst
 
     for inst in instances:
@@ -243,13 +243,13 @@ def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") ->
     url_str = str(req.url)
 
     for inst in instances:
-        if host in inst._host_list or inst._match_pattern(url_str):
+        if host in inst._host_list or (host not in inst._passthrough_hosts and inst._match_pattern(url_str)):
             if req.url.scheme == "https":
                 req.headers["X-Aiointercept-Orig-Scheme"] = "https"
             return None
 
     for inst in instances:
-        if inst._patterns_list and (inst.passthrough_unmatched or host in inst._passthrough_hosts):
+        if inst._patterns_list and inst.passthrough_unmatched:
             if req.url.scheme == "https":
                 req.headers["X-Aiointercept-Orig-Scheme"] = "https"
             return None
