@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- The original request scheme is tracked per connection instead of per host: HTTPS requests on kept-alive connections are no longer proxied upstream as cleartext HTTP with `passthrough_unmatched=True`, `http://` and `https://` handlers on the same host (including http to https redirects) both work, and HTTPS on non-default ports survives `clear()` on kept-alive connections.
 
 ## [1.0.0] - 2026-10-12
 
