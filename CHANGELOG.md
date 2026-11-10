@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- A percent-encoded slash (`%2F`) in a URL path is no longer decoded when matching, so `/a%2Fb` and `/a/b` are different resources and callbacks and recorded requests keep the `%2F`.
 
 ## [1.0.0] - 2026-10-12
 
