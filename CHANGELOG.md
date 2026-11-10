@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
+
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
