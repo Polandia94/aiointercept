@@ -366,6 +366,46 @@ async def test_passthrough_host_is_allowed(real_upstream: TestServer, passthroug
         assert await real.text() == "upstream"
 
 
+async def test_passthrough_host_with_unrelated_regex(real_upstream: TestServer) -> None:
+    """A registered regex must not claim a passthrough host."""
+    upstream_url = f"{upstream_base(real_upstream)}/status/200"
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough=[upstream_base(real_upstream)]) as m,
+    ):
+        m.get(re.compile(r"^http://other\.test/.*$"), status=204)
+        real = await session.get(upstream_url)
+        assert real.status == 200
+        assert await real.text() == "upstream"
+        mocked = await session.get("http://other.test/x")
+        assert mocked.status == 204
+
+
+async def test_passthrough_host_beats_matching_regex(real_upstream: TestServer) -> None:
+    """Passthrough beats a regex that would match the passthrough host's URL."""
+    upstream_url = f"{upstream_base(real_upstream)}/status/200"
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough=[upstream_base(real_upstream)]) as m,
+    ):
+        m.get(re.compile(r"^http://localhost:.*$"), status=204)
+        real = await session.get(upstream_url)
+        assert real.status == 200
+        assert await real.text() == "upstream"
+
+
+async def test_exact_url_on_passthrough_host_is_mocked(real_upstream: TestServer) -> None:
+    """An exact-URL registration still beats passthrough for that host."""
+    base = upstream_base(real_upstream)
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough=[base]) as m,
+    ):
+        m.get(f"{base}/status/200", status=204)
+        resp = await session.get(f"{base}/status/200")
+        assert resp.status == 204
+
+
 # ---------------------------------------------------------------------------
 # Stale DNS cache: a connector that resolved a host for real before the mock
 # started must not reuse that resolution once mocking is active.
