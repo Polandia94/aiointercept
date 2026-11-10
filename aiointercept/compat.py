@@ -14,6 +14,9 @@ def normalize_url(url: "URL | str") -> URL:
     url = URL(url)
     if url.fragment:
         url = url.with_fragment(None)
+    # aiohttp moves userinfo into an Authorization header, so the server never sees it.
+    if url.user is not None or url.password is not None:
+        url = url.with_user(None)
     sorted_query = sorted(url.query.items())
     # Normalize "http://host" and "http://host/" to the same key.
     if host := url.raw_host:
