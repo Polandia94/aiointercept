@@ -465,6 +465,8 @@ class aiointercept:  # noqa: N801
         self.ordered_requests: list[tuple[tuple[str, URL], AiointerceptRequest]] = []
 
         self.server: TestServer | None = None
+        self._server_host: str | None = None
+        self._server_port: int | None = None
         self._bypass_session: aiohttp.ClientSession | None = None
         # The intercept server runs on its own daemon thread + event loop so
         # that callers whose loop gets blocked (e.g. Starlette TestClient
@@ -480,6 +482,25 @@ class aiointercept:  # noqa: N801
     async def __aenter__(self) -> Self:
         await self.start()
         return self
+
+    @property
+    def server_host(self) -> str:
+        """Host the test server is bound to. Raises ``RuntimeError`` before the first start."""
+        if self._server_host is None:
+            raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
+        return self._server_host
+
+    @property
+    def server_port(self) -> int:
+        """Port the test server is listening on. Raises ``RuntimeError`` before the first start."""
+        if self._server_port is None:
+            raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
+        return self._server_port
+
+    @property
+    def server_url(self) -> str:
+        """Base URL of the running test server. Raises ``RuntimeError`` before the first start."""
+        return f"http://{self.server_host}:{self.server_port}"
 
     async def start(self) -> None:
         """Start the test server and install patches (if any).
@@ -500,9 +521,8 @@ class aiointercept:  # noqa: N801
 
         assert isinstance(self.server.host, str)
         assert isinstance(self.server.port, int)
-        self.server_host = self.server.host
-        self.server_port = self.server.port
-        self.server_url = f"http://{self.server_host}:{self.server.port}"
+        self._server_host = self.server.host
+        self._server_port = self.server.port
 
         try:
             if self._mock_external_urls:
