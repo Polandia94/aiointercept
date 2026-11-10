@@ -1232,6 +1232,35 @@ async def test_assert_called_with_strict_headers_fail():
     assert exc_info.value.__notes__ == ["- {'X-Token': 'wrong'}\n+ {'Host': 'example.com', 'X-Token': 'abc'}"]
 
 
+async def test_assert_called_with_strict_headers_https_pass():
+    """strict_headers=True ignores the internal scheme header injected for HTTPS requests."""
+    url = "https://example.com/strict"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers={"X-Token": "abc"},
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        m.assert_called_with(url, headers={"Host": "example.com", "X-Token": "abc"}, strict_headers=True)
+
+
+async def test_assert_called_with_strict_headers_https_fail_hides_internal_header():
+    """A failing strict comparison on HTTPS does not leak the internal scheme header."""
+    url = "https://example.com/strictfail"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers={"X-Token": "abc"},
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with(url, headers={"X-Token": "wrong"}, strict_headers=True)
+    assert "orig-scheme" not in str(exc_info.value).lower()
+    assert not any("orig-scheme" in note.lower() for note in exc_info.value.__notes__)
+
+
 # ---------------------------------------------------------------------------
 # assert_called_with extra kwargs deprecation warning
 # ---------------------------------------------------------------------------
