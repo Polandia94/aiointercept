@@ -922,15 +922,47 @@ async def test_url_with_different_query_param():
 
 
 # ---------------------------------------------------------------------------
-# passthrough with unparseable URL → falls back to raw string as host (line 82-83)
+# passthrough entries are validated and reduced to their host
 # ---------------------------------------------------------------------------
 
 
-def test_passthrough_invalid_url_fallback():
-    """An unparseable passthrough entry is used as-is rather than raising."""
-    m = aiointercept(mock_external_urls=True, passthrough=["not-a-valid-url:::"])
-    # host is None so the raw string is used as fallback
-    assert "not-a-valid-url:::" in m._passthrough_hosts
+@pytest.mark.parametrize(
+    ("entry", "host"),
+    [
+        ("https://real.example.com/path", "real.example.com"),
+        ("real.example.com", "real.example.com"),
+        ("real.example.com.", "real.example.com"),
+        ("example.com:8080", "example.com"),
+        ("example.com:8080/path", "example.com"),
+        ("[::1]:8080", "::1"),
+        ("http://[::1]:8080/x", "::1"),
+    ],
+)
+def test_passthrough_entry_reduced_to_host(entry: str, host: str) -> None:
+    m = aiointercept(mock_external_urls=True, passthrough=[entry])
+    assert m._passthrough_hosts == [host]
+
+
+@pytest.mark.parametrize("entry", ["not-a-valid-url:::", "", "http://"])
+def test_passthrough_unparseable_entry_raises(entry: str) -> None:
+    with pytest.raises(ValueError, match="passthrough"):
+        aiointercept(mock_external_urls=True, passthrough=[entry])
+
+
+def test_passthrough_requires_mock_external_urls() -> None:
+    with pytest.raises(ValueError, match="mock_external_urls"):
+        aiointercept(passthrough=["example.com"])
+
+
+async def test_passthrough_host_and_port_without_scheme(real_upstream: TestServer) -> None:
+    """``host:port`` (no scheme) is accepted and lets the host through."""
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough=[f"localhost:{real_upstream.port}"]),
+    ):
+        real = await session.get(f"{upstream_base(real_upstream)}/status/200")
+        assert real.status == 200
+        assert await real.text() == "upstream"
 
 
 # ---------------------------------------------------------------------------
