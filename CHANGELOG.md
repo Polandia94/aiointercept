@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- An https request to a host with no registered handler under `mock_external_urls=True` now fails with a connection error, is recorded and is diagnosed, instead of raising an SSL error with nothing recorded.
 
 ## [1.0.0] - 2026-10-12
 
