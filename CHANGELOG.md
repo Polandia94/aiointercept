@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- `MIGRATING.md` now describes the current `call_count` support, the `assert_called_with()` deprecation warning, callback exception handling, and host-based `passthrough` matching.
 
 ## [1.0.0] - 2026-10-12
 
