@@ -682,7 +682,6 @@ class aiointercept:  # noqa: N801
 
         req_method = request.method.upper()
         key = (req_method, url)
-        self.requests.setdefault(key, [])
         captured_body = None
         json = None
         if request.can_read_body:
@@ -701,7 +700,7 @@ class aiointercept:  # noqa: N801
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(aiointercept_request)
+        self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
