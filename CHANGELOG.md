@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- Callbacks that return `None` now serve the registered response, async callable objects are awaited as async callbacks, and other invalid return values fail with a clear error.
 
 ## [1.0.0] - 2026-10-12
 
