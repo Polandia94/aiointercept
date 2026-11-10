@@ -1412,6 +1412,7 @@ async def test_callback_result_content_type_header_case_insensitive():
         async with aiohttp.ClientSession() as session, session.get("http://example.test/file") as resp:
             assert resp.status == 200
             assert resp.headers["Content-Type"].startswith("application/octet-stream")
+            assert await resp.read() == b"hello"
 
 
 async def test_callback_result_content_type_with_charset():
@@ -1434,7 +1435,6 @@ async def test_callback_result_content_type_with_charset():
             async with session.get("http://example.test/b") as resp:
                 assert resp.status == 200
                 assert await resp.text() == "é"
-            assert await resp.read() == b"hello"
 
 
 async def test_https_callback_receives_https_url():

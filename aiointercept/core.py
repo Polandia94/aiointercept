@@ -894,12 +894,18 @@ class aiointercept:  # noqa: N801
             # ``_body`` may be bytes/str or an AsyncIterable[bytes]; in the
             # latter case web.Response wraps it in an AsyncIterablePayload and
             # streams it chunked, so we don't special-case streaming here.
+            # Send content_type as a plain header: aiohttp's ``content_type=``
+            # argument rejects parameters such as ``; charset=utf-8``. An explicit
+            # content_type wins over a Content-Type header; copy, never mutate.
+            response_headers = dict(_headers or {})
+            if _content_type:
+                response_headers = {k: v for k, v in response_headers.items() if k.lower() != "content-type"}
+                response_headers["Content-Type"] = _content_type
             return web.Response(
                 status=_status,
                 body=_body,
-                headers=_headers,
+                headers=response_headers,
                 reason=_reason,
-                content_type=_content_type,
             )
 
         raw: handler_type = handler if not exception else _CLOSE_CONNECTION
