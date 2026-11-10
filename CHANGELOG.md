@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
+
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- A `repeat=True` registration made after finite responses for the same URL or pattern no longer discards them; they are served first, then the repeating response.
 
 ## [1.0.0] - 2026-10-12
 
