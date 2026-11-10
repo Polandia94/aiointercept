@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- `passthrough` entries are now reduced to their host (`host:port` and bare hosts work), and an entry without a host, or `passthrough` without `mock_external_urls=True`, raises `ValueError` instead of being silently ignored.
 
 ## [1.0.0] - 2026-10-12
 
