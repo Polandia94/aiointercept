@@ -545,6 +545,24 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         assert resp_real.status == 201
 
 
+@pytest.mark.parametrize("use_hostname", [False, True], ids=["server_url", "localhost"])
+async def test_passthrough_unmatched_does_not_proxy_into_mock_itself(use_hostname: bool, caplog):
+    """An unmatched request aimed at the mock server itself must not be proxied
+    back into the mock (which recursed until the connection limit and hung).
+    It is handled like any other unmatched request: one dispatch, a warning,
+    and a prompt ClientConnectionError. POST avoids aiohttp's idempotent retry."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with (
+        ClientSession(timeout=timeout) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        base = f"http://localhost:{m.server_port}" if use_hostname else m.server_url
+        with caplog.at_level(logging.WARNING, logger="aiointercept"), pytest.raises(ClientConnectionError):
+            await session.post(f"{base}/typo")
+        assert m.call_count == 1
+        assert "targeted the mock server itself" in caplog.text
+
+
 async def test_passthrough_upstream_failure_surfaces_connection_error(caplog):
     """An upstream transport failure while proxying must reach the client as a
     ClientConnectionError (as without the mock), not as an HTTP 500."""
