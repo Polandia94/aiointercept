@@ -22,6 +22,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -683,7 +684,6 @@ class aiointercept:  # noqa: N801
 
         req_method = request.method.upper()
         key = (req_method, url)
-        self.requests.setdefault(key, [])
         captured_body = None
         json = None
         if request.can_read_body:
@@ -702,7 +702,7 @@ class aiointercept:  # noqa: N801
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(aiointercept_request)
+        self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
@@ -747,23 +747,33 @@ class aiointercept:  # noqa: N801
                     # the server loop, which is the loop the session must bind
                     # to, and there is no await between check and assignment.
                     session = self._bypass_session = self._make_bypass_session()
-                async with session.request(
-                    method=request.method,
-                    url=real_url,
-                    headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
-                    data=getattr(request, "captured_body", None) or None,
-                    # Relay redirects untouched so the *client's* redirect
-                    # handling (allow_redirects, history) behaves as it would
-                    # against the real network.
-                    allow_redirects=False,
-                    ssl=True,
-                ) as real_resp:
-                    body = await real_resp.read()
-                    return web.Response(
-                        status=real_resp.status,
-                        headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
-                        body=body,
-                    )
+                try:
+                    async with session.request(
+                        method=request.method,
+                        url=real_url,
+                        headers=CIMultiDict(
+                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                        ),
+                        data=getattr(request, "captured_body", None) or None,
+                        # Relay redirects untouched so the *client's* redirect
+                        # handling (allow_redirects, history) behaves as it would
+                        # against the real network.
+                        allow_redirects=False,
+                        ssl=True,
+                    ) as real_resp:
+                        body = await real_resp.read()
+                        status = real_resp.status
+                        resp_headers = CIMultiDict(
+                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                        )
+                except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+                    # Upstream transport failure: surface it as a connection
+                    # error on the client, like the unmatched path does.
+                    logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
+                    if request.transport:
+                        request.transport.close()
+                    return web.Response(status=502, text="Upstream request failed.")
+                return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side

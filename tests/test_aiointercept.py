@@ -17,6 +17,7 @@ from aiohttp.abc import AbstractResolver
 from aiohttp.client_exceptions import ClientConnectionError
 from aiohttp.connector import TCPConnector
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from aiointercept import CallbackResult, MockResponse, aiointercept
@@ -544,6 +545,25 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         assert resp_real.status == 201
 
 
+async def test_passthrough_upstream_failure_surfaces_connection_error(caplog):
+    """An upstream transport failure while proxying must reach the client as a
+    ClientConnectionError (as without the mock), not as an HTTP 500."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level("WARNING")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        with pytest.raises(ClientConnectionError):
+            await session.post(f"http://localhost:{closed_port}/x")
+        assert m.call_count == 1
+    messages = [r.message for r in caplog.records if r.name == "aiointercept.core"]
+    assert len(messages) == 1
+    assert "POST" in messages[0]
+    assert f"http://localhost:{closed_port}/x" in messages[0]
+    assert not [r for r in caplog.records if r.name == "aiohttp.server"]
+
+
 async def test_pattern_does_not_intercept_bare_ip(real_upstream: TestServer):
     """Regression (#96): DNS patching must not intercept requests to bare IP
     addresses. With a regex pattern registered, a request to a bare IP that no
@@ -929,6 +949,25 @@ async def test_requests_dict_populated():
         key = ("GET", URL(url))
         assert key in m.requests
         assert len(m.requests[key]) == 2
+
+
+async def test_aborted_upload_is_not_recorded():
+    """A client that disconnects mid-body leaves no empty entry behind in m.requests."""
+    async with aiointercept() as m:
+        sock = socket.create_connection((m.server_host, m.server_port), timeout=2)
+        try:
+            head = f"POST /upload HTTP/1.1\r\nHost: {m.server_host}:{m.server_port}\r\nContent-Length: 1000\r\n\r\n"
+            sock.sendall(head.encode() + b"abc")
+        finally:
+            sock.close()
+        # The server runs on its own thread: poll briefly for it to notice the disconnect.
+        for _ in range(20):
+            if m.requests:
+                break
+            await asyncio.sleep(0.05)
+        assert m.requests == {}
+        assert m.ordered_requests == []
+        m.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1840,6 +1879,27 @@ async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestSer
             assert (await first.json())["cookie_header"] is None
             second = await session.get(f"{base}/cookies")
             assert (await second.json())["cookie_header"] is None
+
+
+async def test_passthrough_proxied_repeated_response_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated upstream headers (Set-Cookie) must all reach the client."""
+    base = upstream_base(real_upstream)
+    async with (
+        ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/two-cookies")
+        assert resp.headers.getall("Set-Cookie") == ["a=1; Path=/", "b=2; Path=/"]
+
+
+async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated client request headers must all reach the upstream."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/echo-dup", headers=CIMultiDict([("X-Dup", "1"), ("X-Dup", "2")]))
+        assert await resp.json() == ["1", "2"]
 
 
 # ---------------------------------------------------------------------------
