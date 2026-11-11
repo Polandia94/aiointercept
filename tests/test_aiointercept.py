@@ -17,6 +17,7 @@ from aiohttp.abc import AbstractResolver
 from aiohttp.client_exceptions import ClientConnectionError
 from aiohttp.connector import TCPConnector
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from aiointercept import CallbackResult, MockResponse, aiointercept
@@ -205,6 +206,42 @@ async def test_repeat_true_infinite():
             assert resp.status == 200
 
 
+async def test_repeat_true_after_finite_serves_finite_first():
+    """A repeat=True registered after a finite one is served only once the finite one is consumed."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(3)]
+    assert statuses == [500, 200, 200]
+
+
+async def test_repeat_true_after_two_finite_serves_them_in_order():
+    """Several finite responses queued before repeat=True are served in order, then the repeating one."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=503)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating tail: it would never be reached."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201)
+
+
+async def test_second_repeat_true_raises():
+    """A second repeat=True for the same URL and method raises instead of replacing the first."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201, repeat=True)
+
+
 async def test_repeat_false_once():
     """repeat=False (default) consumes the handler after a single call; subsequent calls raise."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
@@ -275,6 +312,36 @@ async def test_pattern_repeat_integer():
         assert resp.status == 200
         resp = await session.get("http://pat.test/path")
         assert resp.status == 200
+
+
+async def test_pattern_repeat_true_after_finite_serves_finite_first():
+    """A pattern registered with repeat=True after finite ones becomes the tail of the queue."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=503)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        statuses = [(await session.get(f"http://pat.test/path{i}")).status for i in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_pattern_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating pattern tail."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201)
+
+
+async def test_pattern_second_repeat_true_raises():
+    """A second repeat=True for the same pattern and method raises instead of replacing the first."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201, repeat=True)
 
 
 async def test_pattern_repeat_error_mixing_repeat_true_and_list():
@@ -476,6 +543,25 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         # Unmatched: proxied via real DNS to the actual server
         resp_real = await session.get(f"{upstream_base(real_upstream)}/status/201")
         assert resp_real.status == 201
+
+
+async def test_passthrough_upstream_failure_surfaces_connection_error(caplog):
+    """An upstream transport failure while proxying must reach the client as a
+    ClientConnectionError (as without the mock), not as an HTTP 500."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level("WARNING")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        with pytest.raises(ClientConnectionError):
+            await session.post(f"http://localhost:{closed_port}/x")
+        assert m.call_count == 1
+    messages = [r.message for r in caplog.records if r.name == "aiointercept.core"]
+    assert len(messages) == 1
+    assert "POST" in messages[0]
+    assert f"http://localhost:{closed_port}/x" in messages[0]
+    assert not [r for r in caplog.records if r.name == "aiohttp.server"]
 
 
 async def test_pattern_does_not_intercept_bare_ip(real_upstream: TestServer):
@@ -863,6 +949,25 @@ async def test_requests_dict_populated():
         key = ("GET", URL(url))
         assert key in m.requests
         assert len(m.requests[key]) == 2
+
+
+async def test_aborted_upload_is_not_recorded():
+    """A client that disconnects mid-body leaves no empty entry behind in m.requests."""
+    async with aiointercept() as m:
+        sock = socket.create_connection((m.server_host, m.server_port), timeout=2)
+        try:
+            head = f"POST /upload HTTP/1.1\r\nHost: {m.server_host}:{m.server_port}\r\nContent-Length: 1000\r\n\r\n"
+            sock.sendall(head.encode() + b"abc")
+        finally:
+            sock.close()
+        # The server runs on its own thread: poll briefly for it to notice the disconnect.
+        for _ in range(20):
+            if m.requests:
+                break
+            await asyncio.sleep(0.05)
+        assert m.requests == {}
+        assert m.ordered_requests == []
+        m.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1860,6 +1965,27 @@ async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestSer
             assert (await first.json())["cookie_header"] is None
             second = await session.get(f"{base}/cookies")
             assert (await second.json())["cookie_header"] is None
+
+
+async def test_passthrough_proxied_repeated_response_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated upstream headers (Set-Cookie) must all reach the client."""
+    base = upstream_base(real_upstream)
+    async with (
+        ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/two-cookies")
+        assert resp.headers.getall("Set-Cookie") == ["a=1; Path=/", "b=2; Path=/"]
+
+
+async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated client request headers must all reach the upstream."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/echo-dup", headers=CIMultiDict([("X-Dup", "1"), ("X-Dup", "2")]))
+        assert await resp.json() == ["1", "2"]
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -358,6 +359,8 @@ class MockResponse:
     def __init__(self, handler: handler_type) -> None:
         self._handler = handler
         self.call_count: int = 0
+        # True for a repeat=True registration: served forever, never popped from a queue.
+        self._repeat = False
 
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
@@ -688,7 +691,6 @@ class aiointercept:  # noqa: N801
 
         req_method = request.method.upper()
         key = (req_method, url)
-        self.requests.setdefault(key, [])
         captured_body = None
         json = None
         if request.can_read_body:
@@ -707,13 +709,15 @@ class aiointercept:  # noqa: N801
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(aiointercept_request)
+        self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: MockResponse | None = None
+            elif selected_handler[0]._repeat:
+                handler = selected_handler[0]
             else:
                 handler = selected_handler.pop(0)
 
@@ -730,7 +734,9 @@ class aiointercept:  # noqa: N801
                     if isinstance(pattern_handler, list):
                         handler = pattern_handler[0]
                         remaining = pattern_handler[1:]
-                        if remaining:
+                        if handler._repeat:
+                            pass  # repeating tail: keep serving it
+                        elif remaining:
                             self.patterns_handler[pattern, req_method] = remaining
                         else:
                             del self.patterns_handler[pattern, req_method]
@@ -747,23 +753,33 @@ class aiointercept:  # noqa: N801
                     # the server loop, which is the loop the session must bind
                     # to, and there is no await between check and assignment.
                     session = self._bypass_session = self._make_bypass_session()
-                async with session.request(
-                    method=request.method,
-                    url=real_url,
-                    headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
-                    data=getattr(request, "captured_body", None) or None,
-                    # Relay redirects untouched so the *client's* redirect
-                    # handling (allow_redirects, history) behaves as it would
-                    # against the real network.
-                    allow_redirects=False,
-                    ssl=True,
-                ) as real_resp:
-                    body = await real_resp.read()
-                    return web.Response(
-                        status=real_resp.status,
-                        headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
-                        body=body,
-                    )
+                try:
+                    async with session.request(
+                        method=request.method,
+                        url=real_url,
+                        headers=CIMultiDict(
+                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                        ),
+                        data=getattr(request, "captured_body", None) or None,
+                        # Relay redirects untouched so the *client's* redirect
+                        # handling (allow_redirects, history) behaves as it would
+                        # against the real network.
+                        allow_redirects=False,
+                        ssl=True,
+                    ) as real_resp:
+                        body = await real_resp.read()
+                        status = real_resp.status
+                        resp_headers = CIMultiDict(
+                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                        )
+                except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+                    # Upstream transport failure: surface it as a connection
+                    # error on the client, like the unmatched path does.
+                    logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
+                    if request.transport:
+                        request.transport.close()
+                    return web.Response(status=502, text="Upstream request failed.")
+                return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
@@ -905,42 +921,39 @@ class aiointercept:  # noqa: N801
         raw: handler_type = handler if not exception else _CLOSE_CONNECTION
         mock_response = MockResponse(raw)
         if repeat is True:
-            if isinstance(url, Pattern):
-                self.patterns_handler[url, method] = mock_response
-                return mock_response
-            handler_url = str(normalize_url(url))
-            self.handlers[handler_url, method] = mock_response
+            # Served forever. If finite responses are already queued it becomes
+            # the tail of that queue; nothing can be queued behind it.
+            mock_response._repeat = True
+            handlers: list[MockResponse] = [mock_response]
         else:
             if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
-            handlers: list[MockResponse] = [mock_response] * repeat
-            if isinstance(url, Pattern):
-                if (url, method) in self.patterns_handler:
-                    list_pattern_handler = self.patterns_handler[(url, method)]
-                    if isinstance(list_pattern_handler, list):
-                        list_pattern_handler += handlers
-                    else:
-                        raise ValueError(
-                            f"Existing handler for pattern {url} {method} has "
-                            "repeat=True, cannot add more handlers to it."
-                        )
-
-                else:
-                    self.patterns_handler[url, method] = handlers
-                return mock_response
-            handler_url = str(normalize_url(url))
-            if (handler_url, method) in self.handlers:
-                handlers_list = self.handlers[(handler_url, method)]
-                if isinstance(handlers_list, list):
-                    handlers_list += handlers
+            handlers = [mock_response] * repeat
+        if isinstance(url, Pattern):
+            if (url, method) in self.patterns_handler:
+                list_pattern_handler = self.patterns_handler[(url, method)]
+                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                    list_pattern_handler += handlers
                 else:
                     raise ValueError(
-                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                        f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.handlers[handler_url, method] = handlers
+                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+            return mock_response
+        handler_url = str(normalize_url(url))
+        if (handler_url, method) in self.handlers:
+            handlers_list = self.handlers[(handler_url, method)]
+            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+                handlers_list += handlers
+            else:
+                raise ValueError(
+                    f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                )
+        else:
+            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
