@@ -479,6 +479,25 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         assert resp_real.status == 201
 
 
+async def test_passthrough_upstream_failure_surfaces_connection_error(caplog):
+    """An upstream transport failure while proxying must reach the client as a
+    ClientConnectionError (as without the mock), not as an HTTP 500."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level("WARNING")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        with pytest.raises(ClientConnectionError):
+            await session.post(f"http://localhost:{closed_port}/x")
+        assert m.call_count == 1
+    messages = [r.message for r in caplog.records if r.name == "aiointercept.core"]
+    assert len(messages) == 1
+    assert "POST" in messages[0]
+    assert f"http://localhost:{closed_port}/x" in messages[0]
+    assert not [r for r in caplog.records if r.name == "aiohttp.server"]
+
+
 async def test_pattern_does_not_intercept_bare_ip(real_upstream: TestServer):
     """Regression (#96): DNS patching must not intercept requests to bare IP
     addresses. With a regex pattern registered, a request to a bare IP that no
