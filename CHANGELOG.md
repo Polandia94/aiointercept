@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
+
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- A `repeat=True` registration made after finite responses for the same URL or pattern no longer discards them; they are served first, then the repeating response.
 - Passthrough upstream failures surface as `ClientConnectionError` on the client instead of an HTTP 500.
 - The passthrough proxy preserves repeated request and response headers (e.g. multiple `Set-Cookie`).
 - A request whose upload is aborted by the client no longer leaves an empty entry in `m.requests`.
