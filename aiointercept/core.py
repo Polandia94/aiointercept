@@ -8,6 +8,7 @@ import socket
 import threading
 import typing
 import warnings
+import weakref
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
@@ -453,7 +454,10 @@ class aiointercept:  # noqa: N801
         self.passthrough_unmatched = passthrough_unmatched
 
         self._host_list: set[str] = set()
-        self._https_hosts: set[str] = set()
+        # Server-side transports whose connection was opened for an https://
+        # URL. aiohttp never pools http and https on the same connection, so a
+        # per-connection tag tells every later keep-alive request its scheme.
+        self._https_transports: weakref.WeakSet[asyncio.BaseTransport] = weakref.WeakSet()
         self._patterns_list: list[Pattern[str]] = []
 
         # handler are (path, method) → handler or list of handlers (if repeat != True)
@@ -535,7 +539,6 @@ class aiointercept:  # noqa: N801
             self.handlers.clear()
             self.patterns_handler.clear()
             self._host_list.clear()
-            self._https_hosts.clear()
             self._patterns_list.clear()
 
     async def _start_server_thread(self) -> None:
@@ -675,12 +678,16 @@ class aiointercept:  # noqa: N801
         return f"aiointercept: no handler for {request_line} — no handlers registered."
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
-        url = normalize_url(request.url)
-        req_host = url.raw_authority
-        if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
-            self._https_hosts.add(req_host)
-        if req_host in self._https_hosts:
-            url = url.with_scheme("https")
+        # The scheme header only rides on the first request of each new
+        # connection (aiohttp calls the SSL-context hook on connect), so
+        # remember it per connection for later keep-alive requests.
+        orig_https = request.headers.get("X-Aiointercept-Orig-Scheme") == "https"
+        if orig_https and request.transport is not None:
+            self._https_transports.add(request.transport)
+        # ``None in WeakSet`` is simply False, so a closed transport needs no guard.
+        is_https = orig_https or request.transport in self._https_transports or request.secure
+        scheme = "https" if is_https else "http"
+        url = normalize_url(request.url).with_scheme(scheme)
 
         req_method = request.method.upper()
         key = (req_method, url)
@@ -739,7 +746,6 @@ class aiointercept:  # noqa: N801
 
         if handler is None:
             if self._mock_external_urls and self.passthrough_unmatched:
-                scheme = request.headers.get("X-Aiointercept-Orig-Scheme") or ("https" if request.secure else "http")
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
                 session = self._bypass_session
                 if session is None:
@@ -850,12 +856,6 @@ class aiointercept:  # noqa: N801
 
             # Map this host → our test server
             self._host_list.add(host)
-            # Record HTTPS-ness eagerly so it survives clear() + re-add. The
-            # SSL-context hook also populates _https_hosts, but only on fresh
-            # TCP connections; keep-alive connections that outlive a clear()
-            # would otherwise lose their scheme tagging.
-            if url.scheme == "https":
-                self._https_hosts.add(host)
 
         if json is not None:
             body = json_module.dumps(json).encode()
@@ -992,7 +992,6 @@ class aiointercept:  # noqa: N801
         self.patterns_handler.clear()
         self._host_list.clear()
         self._patterns_list.clear()
-        self._https_hosts.clear()
 
     def assert_called(self) -> None:
         """Assert that at least one request was made."""
