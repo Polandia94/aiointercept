@@ -8,6 +8,7 @@ import socket
 import threading
 import typing
 import warnings
+import weakref
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
@@ -22,6 +23,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -363,6 +365,8 @@ class MockResponse:
     def __init__(self, handler: handler_type) -> None:
         self._handler = handler
         self.call_count: int = 0
+        # True for a repeat=True registration: served forever, never popped from a queue.
+        self._repeat = False
 
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
@@ -456,7 +460,10 @@ class aiointercept:  # noqa: N801
         self.passthrough_unmatched = passthrough_unmatched
 
         self._host_list: set[str] = set()
-        self._https_hosts: set[str] = set()
+        # Server-side transports whose connection was opened for an https://
+        # URL. aiohttp never pools http and https on the same connection, so a
+        # per-connection tag tells every later keep-alive request its scheme.
+        self._https_transports: weakref.WeakSet[asyncio.BaseTransport] = weakref.WeakSet()
         self._patterns_list: list[Pattern[str]] = []
 
         # handler are (path, method) → handler or list of handlers (if repeat != True)
@@ -538,7 +545,6 @@ class aiointercept:  # noqa: N801
             self.handlers.clear()
             self.patterns_handler.clear()
             self._host_list.clear()
-            self._https_hosts.clear()
             self._patterns_list.clear()
 
     async def _start_server_thread(self) -> None:
@@ -684,16 +690,19 @@ class aiointercept:  # noqa: N801
         return f"aiointercept: no handler for {request_line} — no handlers registered."
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
-        url = normalize_url(request.url)
-        req_host = url.raw_authority
-        if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
-            self._https_hosts.add(req_host)
-        if req_host in self._https_hosts:
-            url = url.with_scheme("https")
+        # The scheme header only rides on the first request of each new
+        # connection (aiohttp calls the SSL-context hook on connect), so
+        # remember it per connection for later keep-alive requests.
+        orig_https = request.headers.get("X-Aiointercept-Orig-Scheme") == "https"
+        if orig_https and request.transport is not None:
+            self._https_transports.add(request.transport)
+        # ``None in WeakSet`` is simply False, so a closed transport needs no guard.
+        is_https = orig_https or request.transport in self._https_transports or request.secure
+        scheme = "https" if is_https else "http"
+        url = normalize_url(request.url).with_scheme(scheme)
 
         req_method = request.method.upper()
         key = (req_method, url)
-        self.requests.setdefault(key, [])
         captured_body = None
         json = None
         if request.can_read_body:
@@ -712,13 +721,15 @@ class aiointercept:  # noqa: N801
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(aiointercept_request)
+        self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: MockResponse | None = None
+            elif selected_handler[0]._repeat:
+                handler = selected_handler[0]
             else:
                 handler = selected_handler.pop(0)
 
@@ -735,7 +746,9 @@ class aiointercept:  # noqa: N801
                     if isinstance(pattern_handler, list):
                         handler = pattern_handler[0]
                         remaining = pattern_handler[1:]
-                        if remaining:
+                        if handler._repeat:
+                            pass  # repeating tail: keep serving it
+                        elif remaining:
                             self.patterns_handler[pattern, req_method] = remaining
                         else:
                             del self.patterns_handler[pattern, req_method]
@@ -746,7 +759,6 @@ class aiointercept:  # noqa: N801
         if handler is None:
             warning_msg: str | None = None
             if self._mock_external_urls and self.passthrough_unmatched:
-                scheme = request.headers.get("X-Aiointercept-Orig-Scheme") or ("https" if request.secure else "http")
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
                 session = self._bypass_session
                 if session is None:
@@ -758,7 +770,9 @@ class aiointercept:  # noqa: N801
                     async with session.request(
                         method=request.method,
                         url=real_url,
-                        headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
+                        headers=CIMultiDict(
+                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                        ),
                         data=getattr(request, "captured_body", None) or None,
                         # Relay redirects untouched so the *client's* redirect
                         # handling (allow_redirects, history) behaves as it would
@@ -767,16 +781,24 @@ class aiointercept:  # noqa: N801
                         ssl=True,
                     ) as real_resp:
                         body = await real_resp.read()
-                        return web.Response(
-                            status=real_resp.status,
-                            headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
-                            body=body,
+                        status = real_resp.status
+                        resp_headers = CIMultiDict(
+                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
                         )
                 except _SelfProxyError:
                     warning_msg = (
                         f"aiointercept: no handler for {req_method} {url} — "
                         "the request targeted the mock server itself and was not proxied"
                     )
+                except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+                    # Upstream transport failure: surface it as a connection
+                    # error on the client, like the unmatched path does.
+                    logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
+                    if request.transport:
+                        request.transport.close()
+                    return web.Response(status=502, text="Upstream request failed.")
+                else:
+                    return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
@@ -853,12 +875,6 @@ class aiointercept:  # noqa: N801
 
             # Map this host → our test server
             self._host_list.add(host)
-            # Record HTTPS-ness eagerly so it survives clear() + re-add. The
-            # SSL-context hook also populates _https_hosts, but only on fresh
-            # TCP connections; keep-alive connections that outlive a clear()
-            # would otherwise lose their scheme tagging.
-            if url.scheme == "https":
-                self._https_hosts.add(host)
 
         if json is not None:
             body = json_module.dumps(json).encode()
@@ -924,42 +940,39 @@ class aiointercept:  # noqa: N801
         raw: handler_type = handler if not exception else _CLOSE_CONNECTION
         mock_response = MockResponse(raw)
         if repeat is True:
-            if isinstance(url, Pattern):
-                self.patterns_handler[url, method] = mock_response
-                return mock_response
-            handler_url = str(normalize_url(url))
-            self.handlers[handler_url, method] = mock_response
+            # Served forever. If finite responses are already queued it becomes
+            # the tail of that queue; nothing can be queued behind it.
+            mock_response._repeat = True
+            handlers: list[MockResponse] = [mock_response]
         else:
             if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
-            handlers: list[MockResponse] = [mock_response] * repeat
-            if isinstance(url, Pattern):
-                if (url, method) in self.patterns_handler:
-                    list_pattern_handler = self.patterns_handler[(url, method)]
-                    if isinstance(list_pattern_handler, list):
-                        list_pattern_handler += handlers
-                    else:
-                        raise ValueError(
-                            f"Existing handler for pattern {url} {method} has "
-                            "repeat=True, cannot add more handlers to it."
-                        )
-
-                else:
-                    self.patterns_handler[url, method] = handlers
-                return mock_response
-            handler_url = str(normalize_url(url))
-            if (handler_url, method) in self.handlers:
-                handlers_list = self.handlers[(handler_url, method)]
-                if isinstance(handlers_list, list):
-                    handlers_list += handlers
+            handlers = [mock_response] * repeat
+        if isinstance(url, Pattern):
+            if (url, method) in self.patterns_handler:
+                list_pattern_handler = self.patterns_handler[(url, method)]
+                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                    list_pattern_handler += handlers
                 else:
                     raise ValueError(
-                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                        f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.handlers[handler_url, method] = handlers
+                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+            return mock_response
+        handler_url = str(normalize_url(url))
+        if (handler_url, method) in self.handlers:
+            handlers_list = self.handlers[(handler_url, method)]
+            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+                handlers_list += handlers
+            else:
+                raise ValueError(
+                    f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                )
+        else:
+            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
@@ -998,7 +1011,6 @@ class aiointercept:  # noqa: N801
         self.patterns_handler.clear()
         self._host_list.clear()
         self._patterns_list.clear()
-        self._https_hosts.clear()
 
     def assert_called(self) -> None:
         """Assert that at least one request was made."""
