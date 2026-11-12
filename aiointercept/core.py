@@ -932,9 +932,8 @@ class aiointercept:  # noqa: N801
             # Send content_type as a plain header: aiohttp's ``content_type=``
             # argument rejects parameters such as ``; charset=utf-8``. An explicit
             # content_type wins over a Content-Type header; copy, never mutate.
-            response_headers = dict(_headers or {})
+            response_headers = CIMultiDict(_headers or {})
             if _content_type:
-                response_headers = {k: v for k, v in response_headers.items() if k.lower() != "content-type"}
                 response_headers["Content-Type"] = _content_type
             return web.Response(
                 status=_status,
