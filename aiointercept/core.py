@@ -1093,7 +1093,9 @@ class aiointercept:  # noqa: N801
                 here are checked; auto-added aiohttp headers are ignored.  Set
                 *strict_headers* to compare the full header map.
             strict_headers: When ``True``, the complete set of actual request
-                headers must match *headers* exactly.  Use
+                headers must match *headers* case-insensitively. Repeated values
+                for each name must match in order; use a ``CIMultiDict`` to
+                specify them. Use
                 :data:`unittest.mock.ANY` as a value to accept any value for a
                 specific key (e.g. ``Content-Length``).
             kwargs: Ignored (present for aioresponses API compatibility).
@@ -1137,10 +1139,15 @@ class aiointercept:  # noqa: N801
                 expected_body = data.encode() if isinstance(data, str) else data
                 if actual_body != expected_body:
                     raise _mismatch("Body mismatch", expected_body, actual_body)
-        if strict_headers:
-            actual_headers = {k: v for k, v in request.headers.items() if k.lower() != "x-aiointercept-orig-scheme"}
-            expected_headers = headers or {}
-            if expected_headers != actual_headers:
+        if strict_headers and headers is not mock.ANY:
+            actual_headers = CIMultiDict(request.headers)
+            actual_headers.popall("X-Aiointercept-Orig-Scheme", None)
+            expected_headers = CIMultiDict(headers or {})
+            actual_values = {k: actual_headers.getall(k) for k in {name.lower() for name in actual_headers}}
+            expected_values = {k: expected_headers.getall(k) for k in {name.lower() for name in expected_headers}}
+            if expected_values != actual_values:
+                if len(actual_headers) != len(actual_values) or len(expected_headers) != len(expected_values):
+                    raise _mismatch("Headers mismatch", list(expected_headers.items()), list(actual_headers.items()))
                 raise _mismatch("Headers mismatch", dict(expected_headers), dict(actual_headers))
         elif headers and headers is not mock.ANY:
             actual_headers_proxy = request.headers

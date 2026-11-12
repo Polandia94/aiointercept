@@ -1486,6 +1486,33 @@ async def test_assert_called_with_strict_headers_https_fail_hides_internal_heade
     assert not any("orig-scheme" in note.lower() for note in exc_info.value.__notes__)
 
 
+async def test_assert_called_with_strict_headers_duplicate_values():
+    url = "https://example.com/strict-duplicates"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers=CIMultiDict([("Cookie", "a=1"), ("Cookie", "b=2")]),
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        expected = CIMultiDict([("COOKIE", "a=1"), ("cookie", mock.ANY), ("host", "example.com")])
+        m.assert_called_with(url, headers=expected, strict_headers=True)
+        m.assert_called_with(url, headers=mock.ANY, strict_headers=True)
+
+        for cookies in (
+            [("Cookie", "a=1")],
+            [("Cookie", "a=1"), ("Cookie", "wrong")],
+            [("Cookie", "b=2"), ("Cookie", "a=1")],
+        ):
+            expected = CIMultiDict([("Host", "example.com"), *cookies])
+            with pytest.raises(AssertionError) as exc_info:
+                m.assert_called_with(url, headers=expected, strict_headers=True)
+            details = str(exc_info.value) + " ".join(exc_info.value.__notes__)
+            assert "a=1" in details
+            assert "b=2" in details
+            assert "orig-scheme" not in details.lower()
+
+
 # ---------------------------------------------------------------------------
 # assert_called_with extra kwargs deprecation warning
 # ---------------------------------------------------------------------------
