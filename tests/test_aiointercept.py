@@ -1512,6 +1512,38 @@ async def test_add_explicit_content_type():
         assert resp.content_type == "text/plain"
 
 
+async def test_add_content_type_with_charset():
+    """content_type= may carry parameters such as a charset."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="<html/>", content_type="text/html; charset=utf-8")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "text/html; charset=utf-8"
+            assert await resp.text() == "<html/>"
+
+
+async def test_add_content_type_with_non_utf8_charset():
+    """A non-UTF-8 charset in content_type= is used by the client to decode the body."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="é".encode("latin-1"), content_type="text/plain; charset=latin-1")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert await resp.text() == "é"
+
+
+async def test_add_content_type_argument_wins_over_header():
+    """When both content_type= and a Content-Type header are given, content_type= wins
+    and the caller's headers dict is not mutated."""
+    headers = {"content-type": "text/plain", "X-Extra": "1"}
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="x", headers=headers, content_type="text/html; charset=utf-8")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert resp.headers.getall("Content-Type") == ["text/html; charset=utf-8"]
+            assert resp.headers["X-Extra"] == "1"
+    assert headers == {"content-type": "text/plain", "X-Extra": "1"}
+
+
 # ---------------------------------------------------------------------------
 # reason= roundtrip
 # ---------------------------------------------------------------------------
@@ -1606,6 +1638,28 @@ async def test_callback_result_content_type_header_case_insensitive():
             assert resp.status == 200
             assert resp.headers["Content-Type"].startswith("application/octet-stream")
             assert await resp.read() == b"hello"
+
+
+async def test_callback_result_content_type_with_charset():
+    """CallbackResult(content_type=...) may carry a charset, for str and bytes bodies."""
+
+    def callback(url, **kwargs):
+        return CallbackResult(body="<html/>", content_type="text/html; charset=utf-8")
+
+    def latin_callback(url, **kwargs):
+        return CallbackResult(body="é".encode("latin-1"), content_type="text/plain; charset=latin-1")
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.test/a", callback=callback)
+        m.get("http://example.test/b", callback=latin_callback)
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://example.test/a") as resp:
+                assert resp.status == 200
+                assert resp.headers["Content-Type"] == "text/html; charset=utf-8"
+                assert await resp.text() == "<html/>"
+            async with session.get("http://example.test/b") as resp:
+                assert resp.status == 200
+                assert await resp.text() == "é"
 
 
 async def test_https_callback_receives_https_url():
