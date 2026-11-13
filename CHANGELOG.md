@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- A percent-encoded slash (`%2F`) in a URL path is no longer decoded when matching, so `/a%2Fb` and `/a/b` are different resources and callbacks and recorded requests keep the `%2F`.
 - `assert_called_with(..., strict_headers=True)` now ignores the internal scheme header on HTTPS requests.
 - `content_type` (and `CallbackResult(content_type=...)`) now accepts values with parameters such as `text/html; charset=utf-8` instead of answering HTTP 500.
 - With `passthrough_unmatched=True`, an unmatched request aimed at the mock server itself (e.g. `m.server_url`) no longer loops back into the mock and hangs the client; it fails with `ClientConnectionError` like any other unmatched request.

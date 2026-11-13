@@ -1017,6 +1017,26 @@ async def test_url_with_query_params():
         m.assert_called_with(url)
 
 
+async def test_encoded_slash_in_path_is_not_conflated_with_slash():
+    """A registered %2F path segment is kept intact and does not match a real slash."""
+    seen: list[str] = []
+
+    def cb(url, **kwargs):
+        seen.append(str(url))
+        return CallbackResult(status=200, body=b"ok")
+
+    encoded = "http://example.com/projects/group%2Fproj"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(encoded, callback=cb, repeat=True)
+        with pytest.raises(ClientConnectionError):
+            await session.get("http://example.com/projects/group/proj")
+        assert seen == []
+        resp = await session.get(URL(encoded, encoded=True))
+        assert resp.status == 200
+        assert seen == [encoded]
+        m.assert_called_with(encoded)
+
+
 # ---------------------------------------------------------------------------
 # assert_any_call with params kwarg
 # ---------------------------------------------------------------------------
