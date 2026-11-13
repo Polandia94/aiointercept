@@ -244,23 +244,12 @@ async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> 
 
 
 def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") -> "SSLContext | None":
-    instances = _active_snapshot
-
-    if (host := req.url.raw_host) is not None:
-        host = normalize_host(host)
-    url_str = str(req.url)
-
-    for inst in instances:
-        if host in inst._host_list or (host not in inst._passthrough_hosts and inst._match_pattern(url_str)):
-            if req.url.scheme == "https":
-                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
-            return None
-
-    for inst in instances:
-        if inst._patterns_list and inst.passthrough_unmatched:
-            if req.url.scheme == "https":
-                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
-            return None
+    # TLS is stripped exactly when the host is routed to a mock server, so
+    # this must agree with _shared_resolve_host (one source of truth).
+    if (host := req.url.raw_host) is not None and _resolution_target(host) is not None:
+        if req.url.scheme == "https":
+            req.headers["X-Aiointercept-Orig-Scheme"] = "https"
+        return None
 
     return cast("SSLContext | None", _real_ssl_context(connector_self, req))
 

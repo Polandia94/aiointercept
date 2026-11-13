@@ -609,6 +609,26 @@ async def test_no_handler_returns_connection_error():
             await session.get("http://example.com/missing")
 
 
+@pytest.mark.parametrize("use_regex", [False, True])
+async def test_unmatched_https_unregistered_host_is_recorded_and_diagnosed(caplog, use_regex):
+    """An https request to a host with no handler fails as a connection error (not a TLS
+    error), is recorded under its https URL, and is diagnosed."""
+    caplog.set_level("WARNING", logger="aiointercept.core")
+    url = "https://other.example.org/x"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        if use_regex:
+            m.get(re.compile(r"^https://api\.example\.com/.*$"))
+        else:
+            m.get("https://api.example.com/a")
+        with pytest.raises(ClientConnectionError) as exc_info:
+            await session.get(url)
+        assert not isinstance(exc_info.value, aiohttp.ClientSSLError)
+        assert ("GET", URL(url)) in m.requests
+        with pytest.raises(AssertionError):
+            m.assert_not_called()
+    assert any("no handler" in r.message or "no matching handler" in r.message for r in caplog.records)
+
+
 async def test_exception_parameter_causes_connection_error():
     """exception= registers a handler that closes the connection, raising ClientConnectionError."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
