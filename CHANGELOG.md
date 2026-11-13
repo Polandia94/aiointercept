@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- `assert_called_with(..., strict_headers=True)` now ignores the internal scheme header on HTTPS requests.
 - `content_type` (and `CallbackResult(content_type=...)`) now accepts values with parameters such as `text/html; charset=utf-8` instead of answering HTTP 500.
 - With `passthrough_unmatched=True`, an unmatched request aimed at the mock server itself (e.g. `m.server_url`) no longer loops back into the mock and hangs the client; it fails with `ClientConnectionError` like any other unmatched request.
 - The original request scheme is tracked per connection instead of per host: HTTPS requests on kept-alive connections are no longer proxied upstream as cleartext HTTP with `passthrough_unmatched=True`, `http://` and `https://` handlers on the same host (including http to https redirects) both work, and HTTPS on non-default ports survives `clear()` on kept-alive connections.
