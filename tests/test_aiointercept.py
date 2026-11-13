@@ -12,11 +12,12 @@ from unittest import mock
 
 import aiohttp
 import pytest
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 from aiohttp.abc import AbstractResolver
 from aiohttp.client_exceptions import ClientConnectionError
 from aiohttp.connector import TCPConnector
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from aiointercept import CallbackResult, MockResponse, aiointercept
@@ -205,6 +206,42 @@ async def test_repeat_true_infinite():
             assert resp.status == 200
 
 
+async def test_repeat_true_after_finite_serves_finite_first():
+    """A repeat=True registered after a finite one is served only once the finite one is consumed."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(3)]
+    assert statuses == [500, 200, 200]
+
+
+async def test_repeat_true_after_two_finite_serves_them_in_order():
+    """Several finite responses queued before repeat=True are served in order, then the repeating one."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=503)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        statuses = [(await session.get("http://repeat.test/retry")).status for _ in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating tail: it would never be reached."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=500)
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201)
+
+
+async def test_second_repeat_true_raises():
+    """A second repeat=True for the same URL and method raises instead of replacing the first."""
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://repeat.test/retry", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.get("http://repeat.test/retry", status=201, repeat=True)
+
+
 async def test_repeat_false_once():
     """repeat=False (default) consumes the handler after a single call; subsequent calls raise."""
     async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
@@ -275,6 +312,36 @@ async def test_pattern_repeat_integer():
         assert resp.status == 200
         resp = await session.get("http://pat.test/path")
         assert resp.status == 200
+
+
+async def test_pattern_repeat_true_after_finite_serves_finite_first():
+    """A pattern registered with repeat=True after finite ones becomes the tail of the queue."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=503)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        statuses = [(await session.get(f"http://pat.test/path{i}")).status for i in range(4)]
+    assert statuses == [500, 503, 200, 200]
+
+
+async def test_pattern_repeat_true_after_finite_then_finite_raises():
+    """Nothing can be queued behind a repeating pattern tail."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=500)
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201)
+
+
+async def test_pattern_second_repeat_true_raises():
+    """A second repeat=True for the same pattern and method raises instead of replacing the first."""
+    pattern = re.compile(r"^http://pat\.test/.*$")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(ValueError, match="repeat=True, cannot add more handlers"):
+            m.add(pattern, method="GET", status=201, repeat=True)
 
 
 async def test_pattern_repeat_error_mixing_repeat_true_and_list():
@@ -476,6 +543,43 @@ async def test_passthrough_unmatched_with_pattern_proxies_unmatched(real_upstrea
         # Unmatched: proxied via real DNS to the actual server
         resp_real = await session.get(f"{upstream_base(real_upstream)}/status/201")
         assert resp_real.status == 201
+
+
+@pytest.mark.parametrize("use_hostname", [False, True], ids=["server_url", "localhost"])
+async def test_passthrough_unmatched_does_not_proxy_into_mock_itself(use_hostname: bool, caplog):
+    """An unmatched request aimed at the mock server itself must not be proxied
+    back into the mock (which recursed until the connection limit and hung).
+    It is handled like any other unmatched request: one dispatch, a warning,
+    and a prompt ClientConnectionError. POST avoids aiohttp's idempotent retry."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with (
+        ClientSession(timeout=timeout) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        base = f"http://localhost:{m.server_port}" if use_hostname else m.server_url
+        with caplog.at_level(logging.WARNING, logger="aiointercept"), pytest.raises(ClientConnectionError):
+            await session.post(f"{base}/typo")
+        assert m.call_count == 1
+        assert "targeted the mock server itself" in caplog.text
+
+
+async def test_passthrough_upstream_failure_surfaces_connection_error(caplog):
+    """An upstream transport failure while proxying must reach the client as a
+    ClientConnectionError (as without the mock), not as an HTTP 500."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level("WARNING")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        with pytest.raises(ClientConnectionError):
+            await session.post(f"http://localhost:{closed_port}/x")
+        assert m.call_count == 1
+    messages = [r.message for r in caplog.records if r.name == "aiointercept.core"]
+    assert len(messages) == 1
+    assert "POST" in messages[0]
+    assert f"http://localhost:{closed_port}/x" in messages[0]
+    assert not [r for r in caplog.records if r.name == "aiohttp.server"]
 
 
 async def test_pattern_does_not_intercept_bare_ip(real_upstream: TestServer):
@@ -885,6 +989,25 @@ async def test_requests_dict_populated():
         assert len(m.requests[key]) == 2
 
 
+async def test_aborted_upload_is_not_recorded():
+    """A client that disconnects mid-body leaves no empty entry behind in m.requests."""
+    async with aiointercept() as m:
+        sock = socket.create_connection((m.server_host, m.server_port), timeout=2)
+        try:
+            head = f"POST /upload HTTP/1.1\r\nHost: {m.server_host}:{m.server_port}\r\nContent-Length: 1000\r\n\r\n"
+            sock.sendall(head.encode() + b"abc")
+        finally:
+            sock.close()
+        # The server runs on its own thread: poll briefly for it to notice the disconnect.
+        for _ in range(20):
+            if m.requests:
+                break
+            await asyncio.sleep(0.05)
+        assert m.requests == {}
+        assert m.ordered_requests == []
+        m.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # HEAD method
 # ---------------------------------------------------------------------------
@@ -912,6 +1035,26 @@ async def test_url_with_query_params():
         resp = await session.get(url)
         assert resp.status == 200
         m.assert_called_with(url)
+
+
+async def test_encoded_slash_in_path_is_not_conflated_with_slash():
+    """A registered %2F path segment is kept intact and does not match a real slash."""
+    seen: list[str] = []
+
+    def cb(url, **kwargs):
+        seen.append(str(url))
+        return CallbackResult(status=200, body=b"ok")
+
+    encoded = "http://example.com/projects/group%2Fproj"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(encoded, callback=cb, repeat=True)
+        with pytest.raises(ClientConnectionError):
+            await session.get("http://example.com/projects/group/proj")
+        assert seen == []
+        resp = await session.get(URL(encoded, encoded=True))
+        assert resp.status == 200
+        assert seen == [encoded]
+        m.assert_called_with(encoded)
 
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1175,23 @@ async def test_redirect_followed():
         assert resp.status == 200
         assert await resp.read() == b"final"
         assert len(resp.history) == 1
+
+
+async def test_redirect_http_to_https_same_host():
+    """An http:// -> https:// redirect on one host serves the 301 first: the
+    plain-HTTP request must not be treated as HTTPS just because the host also
+    has an https:// handler."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        first = m.get("http://example.com/", status=301, headers={"Location": "https://example.com/"})
+        second = m.get("https://example.com/", body=b"secure")
+        resp = await session.get("http://example.com/")
+        assert resp.status == 200
+        assert await resp.read() == b"secure"
+        assert len(resp.history) == 1
+        assert first.call_count == 1
+        assert second.call_count == 1
+        assert ("GET", URL("http://example.com/")) in m.requests
+        assert ("GET", URL("https://example.com/")) in m.requests
 
 
 async def test_redirect_missing_mock_raises():
@@ -1184,6 +1344,91 @@ async def test_https_request_recorded_under_https_scheme():
         assert http_key not in m.requests, "should not appear under http:// when orig scheme is https"
 
 
+async def test_http_and_https_handlers_on_same_host():
+    """An http:// handler stays reachable when the same host also has an https:// handler."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.com/a", body=b"plain")
+        m.get("https://example.com/b", body=b"secure")
+        resp = await session.get("http://example.com/a")
+        assert resp.status == 200
+        assert await resp.read() == b"plain"
+        resp = await session.get("https://example.com/b")
+        assert resp.status == 200
+        assert await resp.read() == b"secure"
+        assert ("GET", URL("http://example.com/a")) in m.requests
+        assert ("GET", URL("https://example.com/b")) in m.requests
+
+
+async def test_consecutive_https_requests_on_keepalive_recorded_as_https():
+    """Every request on a kept-alive HTTPS connection is recorded under https://,
+    not only the first one (which is the only one carrying the scheme header)."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post("https://secure.test/one", body=b"1")
+        m.post("https://secure.test/two", body=b"2")
+        resp = await session.post("https://secure.test/one")
+        assert await resp.read() == b"1"
+        resp = await session.post("https://secure.test/two")
+        assert await resp.read() == b"2"
+        assert list(m.requests) == [
+            ("POST", URL("https://secure.test/one")),
+            ("POST", URL("https://secure.test/two")),
+        ]
+
+
+async def test_https_nondefault_port_keepalive_after_clear():
+    """A kept-alive HTTPS connection to a non-default port keeps its scheme after
+    clear() + re-add (POST, so aiohttp's idempotent retry cannot mask a failure)."""
+    url = "https://example.com:8443/a"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, body=b"1")
+        resp = await session.post(url)
+        assert await resp.read() == b"1"
+        m.clear()
+        m.post(url, body=b"2")
+        resp = await session.post(url)
+        assert resp.status == 200
+        assert await resp.read() == b"2"
+        assert list(m.requests) == [("POST", URL(url))]
+
+
+async def test_https_passthrough_on_keepalive_not_downgraded_to_http():
+    """An unmatched HTTPS request on a kept-alive connection must be proxied
+    upstream over https://, never downgraded to cleartext http://.
+
+    The upstream here speaks plain HTTP only, so a correct proxy fails to reach
+    it (the client sees an error) and the upstream records no request."""
+    received: list[tuple[str, str]] = []
+
+    async def record(request: web.Request) -> web.Response:
+        received.append((request.method, request.path))
+        return web.Response(text="cleartext")
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", record)
+    upstream = TestServer(app)
+    await upstream.start_server()
+    try:
+        base = f"https://localhost:{upstream.port}"
+        async with (
+            ClientSession() as session,
+            aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+        ):
+            m.get(f"{base}/mocked", body=b"mocked")
+            resp = await session.get(f"{base}/mocked")  # new connection: scheme header injected
+            assert await resp.read() == b"mocked"
+            # Same session and host: the kept-alive connection is reused, no header.
+            try:
+                resp = await session.get(f"{base}/status/200")
+            except ClientConnectionError:
+                pass
+            else:
+                assert resp.status != 200
+            assert ("GET", URL(f"{base}/status/200")) in m.requests
+        assert received == [], f"upstream received a cleartext request: {received}"
+    finally:
+        await upstream.close()
+
+
 async def test_duplicate_query_keys_preserved_in_callback():
     """Duplicate query params (?a=1&a=2) must both reach the callback, not be collapsed."""
     seen_query = {}
@@ -1252,6 +1497,62 @@ async def test_assert_called_with_strict_headers_fail():
     assert exc_info.value.__notes__ == ["- {'X-Token': 'wrong'}\n+ {'Host': 'example.com', 'X-Token': 'abc'}"]
 
 
+async def test_assert_called_with_strict_headers_https_pass():
+    """strict_headers=True ignores the internal scheme header injected for HTTPS requests."""
+    url = "https://example.com/strict"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers={"X-Token": "abc"},
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        m.assert_called_with(url, headers={"Host": "example.com", "X-Token": "abc"}, strict_headers=True)
+
+
+async def test_assert_called_with_strict_headers_https_fail_hides_internal_header():
+    """A failing strict comparison on HTTPS does not leak the internal scheme header."""
+    url = "https://example.com/strictfail"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers={"X-Token": "abc"},
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        with pytest.raises(AssertionError) as exc_info:
+            m.assert_called_with(url, headers={"X-Token": "wrong"}, strict_headers=True)
+    assert "orig-scheme" not in str(exc_info.value).lower()
+    assert not any("orig-scheme" in note.lower() for note in exc_info.value.__notes__)
+
+
+async def test_assert_called_with_strict_headers_duplicate_values():
+    url = "https://example.com/strict-duplicates"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers=CIMultiDict([("Cookie", "a=1"), ("Cookie", "b=2")]),
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        expected = CIMultiDict([("COOKIE", "a=1"), ("cookie", mock.ANY), ("host", "example.com")])
+        m.assert_called_with(url, headers=expected, strict_headers=True)
+        m.assert_called_with(url, headers=mock.ANY, strict_headers=True)
+
+        for cookies in (
+            [("Cookie", "a=1")],
+            [("Cookie", "a=1"), ("Cookie", "wrong")],
+            [("Cookie", "b=2"), ("Cookie", "a=1")],
+        ):
+            expected = CIMultiDict([("Host", "example.com"), *cookies])
+            with pytest.raises(AssertionError) as exc_info:
+                m.assert_called_with(url, headers=expected, strict_headers=True)
+            details = str(exc_info.value) + " ".join(exc_info.value.__notes__)
+            assert "a=1" in details
+            assert "b=2" in details
+            assert "orig-scheme" not in details.lower()
+
+
 # ---------------------------------------------------------------------------
 # assert_called_with extra kwargs deprecation warning
 # ---------------------------------------------------------------------------
@@ -1305,6 +1606,38 @@ async def test_add_explicit_content_type():
         m.get("http://ct.test/", body=b"hello", content_type="text/plain")
         resp = await session.get("http://ct.test/")
         assert resp.content_type == "text/plain"
+
+
+async def test_add_content_type_with_charset():
+    """content_type= may carry parameters such as a charset."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="<html/>", content_type="text/html; charset=utf-8")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "text/html; charset=utf-8"
+            assert await resp.text() == "<html/>"
+
+
+async def test_add_content_type_with_non_utf8_charset():
+    """A non-UTF-8 charset in content_type= is used by the client to decode the body."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="é".encode("latin-1"), content_type="text/plain; charset=latin-1")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert await resp.text() == "é"
+
+
+async def test_add_content_type_argument_wins_over_header():
+    """When both content_type= and a Content-Type header are given, content_type= wins
+    and the caller's headers dict is not mutated."""
+    headers = {"content-type": "text/plain", "X-Extra": "1"}
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://ct.test/", body="x", headers=headers, content_type="text/html; charset=utf-8")
+        async with session.get("http://ct.test/") as resp:
+            assert resp.status == 200
+            assert resp.headers.getall("Content-Type") == ["text/html; charset=utf-8"]
+            assert resp.headers["X-Extra"] == "1"
+    assert headers == {"content-type": "text/plain", "X-Extra": "1"}
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1736,28 @@ async def test_callback_result_content_type_header_case_insensitive():
             assert await resp.read() == b"hello"
 
 
+async def test_callback_result_content_type_with_charset():
+    """CallbackResult(content_type=...) may carry a charset, for str and bytes bodies."""
+
+    def callback(url, **kwargs):
+        return CallbackResult(body="<html/>", content_type="text/html; charset=utf-8")
+
+    def latin_callback(url, **kwargs):
+        return CallbackResult(body="é".encode("latin-1"), content_type="text/plain; charset=latin-1")
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get("http://example.test/a", callback=callback)
+        m.get("http://example.test/b", callback=latin_callback)
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://example.test/a") as resp:
+                assert resp.status == 200
+                assert resp.headers["Content-Type"] == "text/html; charset=utf-8"
+                assert await resp.text() == "<html/>"
+            async with session.get("http://example.test/b") as resp:
+                assert resp.status == 200
+                assert await resp.text() == "é"
+
+
 async def test_https_callback_receives_https_url():
     """Under mock_external_urls=True, a callback for an https:// URL must receive
     a URL carrying the https:// scheme — not the http:// the test server saw."""
@@ -1483,12 +1838,13 @@ async def test_exception_only_registration_raises_connection_error():
 
 
 # ---------------------------------------------------------------------------
-# clear() resets _https_hosts
+# clear() and the per-connection HTTPS scheme
 # ---------------------------------------------------------------------------
 
 
 async def test_clear_resets_https_hosts():
-    """After clear(), a host previously seen as HTTPS is no longer treated as HTTPS."""
+    """After clear(), a plain-HTTP request on a new connection to a host previously
+    seen as HTTPS is no longer treated as HTTPS."""
     async with aiointercept(mock_external_urls=False) as m:
         m.get("https://secure.test/data", status=200, body=b"secret")
         async with ClientSession() as session:
@@ -1497,10 +1853,7 @@ async def test_clear_resets_https_hosts():
                 headers={"Host": "secure.test", "X-Aiointercept-Orig-Scheme": "https"},
             )
 
-        assert "secure.test" in m._https_hosts
-
         m.clear()
-        assert "secure.test" not in m._https_hosts
 
         m.get("http://secure.test/data", status=404, body=b"gone")
         async with ClientSession() as session:
@@ -1511,21 +1864,7 @@ async def test_clear_resets_https_hosts():
                 headers={"Host": "secure.test"},
             )
             assert resp.status == 404
-
-
-async def test_add_https_url_populates_https_hosts():
-    """Registering an HTTPS URL eagerly tags the host as HTTPS, even before any
-    request triggers the SSL hook. This is what lets keep-alive connections
-    survive a clear() + re-add cycle."""
-    async with aiointercept(mock_external_urls=True) as m:
-        m.get("https://secure.test/data", status=200, body=b"ok")
-        assert "secure.test" in m._https_hosts
-
-        m.clear()
-        assert "secure.test" not in m._https_hosts
-
-        m.get("https://secure.test/data", status=200, body=b"ok")
-        assert "secure.test" in m._https_hosts
+        assert list(m.requests) == [("GET", URL("http://secure.test/data"))]
 
 
 async def test_clear_then_readd_https_works_over_keepalive():
@@ -1533,9 +1872,9 @@ async def test_clear_then_readd_https_works_over_keepalive():
     that reuses the existing keep-alive connection used to fail with
     ServerDisconnectedError. aiohttp only invokes the SSL-context hook on fresh
     TCP connections, so keep-alive reuses skipped the
-    X-Aiointercept-Orig-Scheme header injection that populated _https_hosts —
-    and clear() had wiped the cached entry. Now add() repopulates it eagerly
-    from the registered URL's scheme."""
+    X-Aiointercept-Orig-Scheme header injection, and clear() had wiped the
+    host-level cache. The scheme is now remembered per connection, which
+    clear() does not touch."""
     async with aiointercept(mock_external_urls=True) as m:
         m.post("https://secure.test/graphql", payload={"data": "first"}, repeat=True)
         async with ClientSession() as session:
@@ -1794,6 +2133,27 @@ async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestSer
             assert (await first.json())["cookie_header"] is None
             second = await session.get(f"{base}/cookies")
             assert (await second.json())["cookie_header"] is None
+
+
+async def test_passthrough_proxied_repeated_response_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated upstream headers (Set-Cookie) must all reach the client."""
+    base = upstream_base(real_upstream)
+    async with (
+        ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/two-cookies")
+        assert resp.headers.getall("Set-Cookie") == ["a=1; Path=/", "b=2; Path=/"]
+
+
+async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
+    """Regression: repeated client request headers must all reach the upstream."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/echo-dup", headers=CIMultiDict([("X-Dup", "1"), ("X-Dup", "2")]))
+        assert await resp.json() == ["1", "2"]
 
 
 # ---------------------------------------------------------------------------
