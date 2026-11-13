@@ -113,7 +113,7 @@ This has two consequences for idempotent methods:
   m.get(url, exception=True)
   m.get(url, payload={"ok": True})
 
-  await session.get(url)   # 200, not ClientConnectionError
+  await session.get(url)  # 200, not ClientConnectionError
   ```
 
   With aioresponses the first call raises, because aioresponses never opens a connection.
@@ -123,12 +123,12 @@ Workarounds:
 - Register the failure twice, so it also absorbs the retry:
 
   ```python
-  boom = m.get(url, exception=True, repeat=2)   # first attempt + aiohttp's automatic retry
+  boom = m.get(url, exception=True, repeat=2)  # first attempt + aiohttp's automatic retry
   m.get(url, payload={"ok": True})
 
   with pytest.raises(aiohttp.ClientConnectionError):
-      await session.get(url)                    # raises
-  resp = await session.get(url)                 # 200
+      await session.get(url)  # raises
+  resp = await session.get(url)  # 200
   ```
 
   After this, `boom.call_count == 2` and `m.call_count == 3`.
