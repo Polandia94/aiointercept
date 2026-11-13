@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- `MIGRATING.md` now describes the current `call_count` support, the `assert_called_with()` deprecation warning, callback exception handling, and host-based `passthrough` matching.
 - An https request to a host with no registered handler under `mock_external_urls=True` now fails with a connection error, is recorded and is diagnosed, instead of raising an SSL error with nothing recorded.
 - A percent-encoded slash (`%2F`) in a URL path is no longer decoded when matching, so `/a%2Fb` and `/a/b` are different resources and callbacks and recorded requests keep the `%2F`.
 - `assert_called_with(..., strict_headers=True)` now ignores the internal scheme header on HTTPS requests.
