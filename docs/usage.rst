@@ -406,8 +406,8 @@ Constructor parameters
      - ``list[str] | None``
      - ``None``
      - Hosts whose requests bypass the mock and reach the real network. Entries
-       must be bare hosts or ``host:port``, not URLs. The port is ignored, so
-       every port and path on that host passes through; invalid entries raise
+       must be hosts (including bracketed IPv6), without ports or URLs. Every
+       port and path on that host passes through; invalid entries raise
        ``ValueError``. Requires ``mock_external_urls=True``.
    * - ``passthrough_unmatched``
      - ``bool``

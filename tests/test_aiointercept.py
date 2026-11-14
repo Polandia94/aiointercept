@@ -1222,9 +1222,7 @@ async def test_url_with_different_query_param():
     [
         ("real.example.com", "real.example.com"),
         ("real.example.com.", "real.example.com"),
-        ("example.com:8080", "example.com"),
         ("[::1]", "::1"),
-        ("[::1]:8080", "::1"),
     ],
 )
 def test_passthrough_entry_reduced_to_host(entry: str, host: str) -> None:
@@ -1248,6 +1246,10 @@ def test_passthrough_entry_reduced_to_host(entry: str, host: str) -> None:
         "example.com?query",
         "example.com#fragment",
         "user@example.com",
+        "example.com:80",
+        "example.com:8080",
+        "[::1]:80",
+        "[::1]:8080",
         "example.com:",
         "example.com:abc",
         "example.com:65536",
@@ -1266,17 +1268,24 @@ def test_passthrough_requires_mock_external_urls() -> None:
         aiointercept(passthrough=["example.com"])
 
 
-async def test_passthrough_host_and_port_without_scheme(real_upstream: TestServer) -> None:
-    """``host:port`` lets the host through on other ports and paths too."""
-    other_port = real_upstream.port + 1 if real_upstream.port < 65535 else real_upstream.port - 1
+async def test_passthrough_host_allows_all_ports_and_paths(real_upstream: TestServer) -> None:
+    """A host entry allows requests on different ports and paths."""
+
+    async def other_handler(request: web.Request) -> web.Response:
+        return web.Response(text="other")
+
+    app = web.Application()
+    app.router.add_get("/other", other_handler)
     async with (
+        TestServer(app) as second_upstream,
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[f"localhost:{other_port}"]),
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]),
     ):
-        for status in (200, 201):
-            real = await session.get(f"{upstream_base(real_upstream)}/status/{status}")
-            assert real.status == status
-            assert await real.text() == "upstream"
+        assert real_upstream.port != second_upstream.port
+        real = await session.get(f"{upstream_base(real_upstream)}/status/200")
+        assert await real.text() == "upstream"
+        other = await session.get(f"{upstream_base(second_upstream)}/other")
+        assert await other.text() == "other"
 
 
 # ---------------------------------------------------------------------------
