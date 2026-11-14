@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
+
+### Changed
+
+- A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
+
 ### Fixed
 
 - Passthrough hosts keep passing through when a regex handler is registered.
+- Callbacks that return `None` now serve the registered response, async callable objects are awaited as async callbacks, and other invalid return values fail with a clear error.
+- `start()` (and `async with`) on an already running mock now raises `RuntimeError` instead of leaking a server thread and leaving the patches installed.
+- `MIGRATING.md` now describes the current `call_count` support, the `assert_called_with()` deprecation warning, callback exception handling, and host-based `passthrough` matching.
+- An https request to a host with no registered handler under `mock_external_urls=True` now fails with a connection error, is recorded and is diagnosed, instead of raising an SSL error with nothing recorded.
+- A percent-encoded slash (`%2F`) in a URL path is no longer decoded when matching, so `/a%2Fb` and `/a/b` are different resources and callbacks and recorded requests keep the `%2F`.
+- `assert_called_with(..., strict_headers=True)` now ignores the internal scheme header on HTTPS requests.
+- `content_type` (and `CallbackResult(content_type=...)`) now accepts values with parameters such as `text/html; charset=utf-8` instead of answering HTTP 500.
+- With `passthrough_unmatched=True`, an unmatched request aimed at the mock server itself (e.g. `m.server_url`) no longer loops back into the mock and hangs the client; it fails with `ClientConnectionError` like any other unmatched request.
+- The original request scheme is tracked per connection instead of per host: HTTPS requests on kept-alive connections are no longer proxied upstream as cleartext HTTP with `passthrough_unmatched=True`, `http://` and `https://` handlers on the same host (including http to https redirects) both work, and HTTPS on non-default ports survives `clear()` on kept-alive connections.
+- A `repeat=True` registration made after finite responses for the same URL or pattern no longer discards them; they are served first, then the repeating response.
+- Passthrough upstream failures surface as `ClientConnectionError` on the client instead of an HTTP 500.
+- The passthrough proxy preserves repeated request and response headers (e.g. multiple `Set-Cookie`).
+- A request whose upload is aborted by the client no longer leaves an empty entry in `m.requests`.
+
+### Changed
+
+- Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
 ## [1.0.0] - 2026-10-12
 

@@ -8,7 +8,8 @@ import socket
 import threading
 import typing
 import warnings
-from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
+import weakref
+from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
 from re import Pattern
@@ -22,6 +23,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
+from multidict import CIMultiDict
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -142,6 +144,12 @@ _PROXY_REQ_DROP = frozenset(("host", "transfer-encoding", "x-aiointercept-orig-s
 # the relayed response — aiohttp keeps an explicit Content-Length header as-is.
 _PROXY_RESP_DROP = frozenset(("transfer-encoding", "content-encoding", "content-length"))
 
+
+class _SelfProxyError(Exception):
+    """Raised by the bypass connector when a passthrough target resolves to the
+    mock server itself; proxying it would loop back into ``_dispatch``."""
+
+
 # Module-level state for class-level patches shared across concurrent instances.
 # Only the first entering instance installs the patches; the last exiting one removes them.
 _patch_lock = threading.Lock()
@@ -236,23 +244,12 @@ async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> 
 
 
 def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") -> "SSLContext | None":
-    instances = _active_snapshot
-
-    if (host := req.url.raw_host) is not None:
-        host = normalize_host(host)
-    url_str = str(req.url)
-
-    for inst in instances:
-        if host in inst._host_list or (host not in inst._passthrough_hosts and inst._match_pattern(url_str)):
-            if req.url.scheme == "https":
-                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
-            return None
-
-    for inst in instances:
-        if inst._patterns_list and inst.passthrough_unmatched:
-            if req.url.scheme == "https":
-                req.headers["X-Aiointercept-Orig-Scheme"] = "https"
-            return None
+    # TLS is stripped exactly when the host is routed to a mock server, so
+    # this must agree with _shared_resolve_host (one source of truth).
+    if (host := req.url.raw_host) is not None and _resolution_target(host) is not None:
+        if req.url.scheme == "https":
+            req.headers["X-Aiointercept-Orig-Scheme"] = "https"
+        return None
 
     return cast("SSLContext | None", _real_ssl_context(connector_self, req))
 
@@ -357,6 +354,8 @@ class MockResponse:
     def __init__(self, handler: handler_type) -> None:
         self._handler = handler
         self.call_count: int = 0
+        # True for a repeat=True registration: served forever, never popped from a queue.
+        self._repeat = False
 
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
@@ -450,7 +449,10 @@ class aiointercept:  # noqa: N801
         self.passthrough_unmatched = passthrough_unmatched
 
         self._host_list: set[str] = set()
-        self._https_hosts: set[str] = set()
+        # Server-side transports whose connection was opened for an https://
+        # URL. aiohttp never pools http and https on the same connection, so a
+        # per-connection tag tells every later keep-alive request its scheme.
+        self._https_transports: weakref.WeakSet[asyncio.BaseTransport] = weakref.WeakSet()
         self._patterns_list: list[Pattern[str]] = []
 
         # handler are (path, method) → handler or list of handlers (if repeat != True)
@@ -463,6 +465,8 @@ class aiointercept:  # noqa: N801
         self.ordered_requests: list[tuple[tuple[str, URL], AiointerceptRequest]] = []
 
         self.server: TestServer | None = None
+        self._server_host: str | None = None
+        self._server_port: int | None = None
         self._bypass_session: aiohttp.ClientSession | None = None
         # The intercept server runs on its own daemon thread + event loop so
         # that callers whose loop gets blocked (e.g. Starlette TestClient
@@ -479,6 +483,25 @@ class aiointercept:  # noqa: N801
         await self.start()
         return self
 
+    @property
+    def server_host(self) -> str:
+        """Host the test server is bound to. Raises ``RuntimeError`` before the first start."""
+        if self._server_host is None:
+            raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
+        return self._server_host
+
+    @property
+    def server_port(self) -> int:
+        """Port the test server is listening on. Raises ``RuntimeError`` before the first start."""
+        if self._server_port is None:
+            raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
+        return self._server_port
+
+    @property
+    def server_url(self) -> str:
+        """Base URL of the running test server. Raises ``RuntimeError`` before the first start."""
+        return f"http://{self.server_host}:{self.server_port}"
+
     async def start(self) -> None:
         """Start the test server and install patches (if any).
 
@@ -487,6 +510,8 @@ class aiointercept:  # noqa: N801
         manager. After this returns, :attr:`server_url` is available. Pair every
         ``start()`` with a :meth:`stop`.
         """
+        if self._server_thread is not None:
+            raise RuntimeError("aiointercept is already started; call stop() before starting it again")
         self._caller_loop = asyncio.get_running_loop()
         self.requests.clear()
         self.ordered_requests.clear()
@@ -496,9 +521,8 @@ class aiointercept:  # noqa: N801
 
         assert isinstance(self.server.host, str)
         assert isinstance(self.server.port, int)
-        self.server_host = self.server.host
-        self.server_port = self.server.port
-        self.server_url = f"http://{self.server_host}:{self.server.port}"
+        self._server_host = self.server.host
+        self._server_port = self.server.port
 
         try:
             if self._mock_external_urls:
@@ -532,7 +556,6 @@ class aiointercept:  # noqa: N801
             self.handlers.clear()
             self.patterns_handler.clear()
             self._host_list.clear()
-            self._https_hosts.clear()
             self._patterns_list.clear()
 
     async def _start_server_thread(self) -> None:
@@ -631,13 +654,19 @@ class aiointercept:  # noqa: N801
         _orig_resolve_host = _real_resolve_host
         _orig_ssl_ctx = _real_ssl_context
         _orig_get = _real_get
+        own_address = (self.server_host, self.server_port)
 
         class _BypassConnector(aiohttp.TCPConnector):
             """Connector wired to the saved originals so proxied requests
             resolve, pool, and encrypt against the real network."""
 
             async def _resolve_host(self, host: str, port: int, traces: Any = None) -> list[ResolveResult]:
-                return await _orig_resolve_host(self, host, port, traces)  # type: ignore[no-any-return]
+                # The original short-circuits IP literals into a result too, so
+                # this sees 127.0.0.1:{port} as well as any name resolving to it.
+                results: list[ResolveResult] = await _orig_resolve_host(self, host, port, traces)
+                if any((r["host"], r["port"]) == own_address for r in results):
+                    raise _SelfProxyError
+                return results
 
             def _get_ssl_context(self, req: ClientRequest) -> SSLContext | None:
                 return _orig_ssl_ctx(self, req)  # type: ignore[no-any-return] # pyright: ignore[reportPrivateUsage]
@@ -672,16 +701,19 @@ class aiointercept:  # noqa: N801
         return f"aiointercept: no handler for {request_line} — no handlers registered."
 
     async def _dispatch(self, request: web.Request) -> web.StreamResponse:
-        url = normalize_url(request.url)
-        req_host = url.raw_authority
-        if request.headers.get("X-Aiointercept-Orig-Scheme") == "https":
-            self._https_hosts.add(req_host)
-        if req_host in self._https_hosts:
-            url = url.with_scheme("https")
+        # The scheme header only rides on the first request of each new
+        # connection (aiohttp calls the SSL-context hook on connect), so
+        # remember it per connection for later keep-alive requests.
+        orig_https = request.headers.get("X-Aiointercept-Orig-Scheme") == "https"
+        if orig_https and request.transport is not None:
+            self._https_transports.add(request.transport)
+        # ``None in WeakSet`` is simply False, so a closed transport needs no guard.
+        is_https = orig_https or request.transport in self._https_transports or request.secure
+        scheme = "https" if is_https else "http"
+        url = normalize_url(request.url).with_scheme(scheme)
 
         req_method = request.method.upper()
         key = (req_method, url)
-        self.requests.setdefault(key, [])
         captured_body = None
         json = None
         if request.can_read_body:
@@ -700,13 +732,15 @@ class aiointercept:  # noqa: N801
         aiointercept_request = AiointerceptRequest.upgrade(request, captured_body, request_kwargs, url)
         # Read body eagerly before the handler runs, because aiohttp sets
         # PayloadAccessError on the stream once the response cycle completes.
-        self.requests[key].append(aiointercept_request)
+        self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
         if isinstance(selected_handler, list):
             if not selected_handler:
                 handler: MockResponse | None = None
+            elif selected_handler[0]._repeat:
+                handler = selected_handler[0]
             else:
                 handler = selected_handler.pop(0)
 
@@ -723,7 +757,9 @@ class aiointercept:  # noqa: N801
                     if isinstance(pattern_handler, list):
                         handler = pattern_handler[0]
                         remaining = pattern_handler[1:]
-                        if remaining:
+                        if handler._repeat:
+                            pass  # repeating tail: keep serving it
+                        elif remaining:
                             self.patterns_handler[pattern, req_method] = remaining
                         else:
                             del self.patterns_handler[pattern, req_method]
@@ -732,8 +768,8 @@ class aiointercept:  # noqa: N801
                     break
 
         if handler is None:
+            warning_msg: str | None = None
             if self._mock_external_urls and self.passthrough_unmatched:
-                scheme = request.headers.get("X-Aiointercept-Orig-Scheme") or ("https" if request.secure else "http")
                 real_url = f"{scheme}://{original_host}{request.path_qs}"
                 session = self._bypass_session
                 if session is None:
@@ -741,24 +777,40 @@ class aiointercept:  # noqa: N801
                     # the server loop, which is the loop the session must bind
                     # to, and there is no await between check and assignment.
                     session = self._bypass_session = self._make_bypass_session()
-                async with session.request(
-                    method=request.method,
-                    url=real_url,
-                    headers={k: v for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP},
-                    data=getattr(request, "captured_body", None) or None,
-                    # Relay redirects untouched so the *client's* redirect
-                    # handling (allow_redirects, history) behaves as it would
-                    # against the real network.
-                    allow_redirects=False,
-                    ssl=True,
-                ) as real_resp:
-                    body = await real_resp.read()
-                    return web.Response(
-                        status=real_resp.status,
-                        headers={k: v for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP},
-                        body=body,
+                try:
+                    async with session.request(
+                        method=request.method,
+                        url=real_url,
+                        headers=CIMultiDict(
+                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                        ),
+                        data=getattr(request, "captured_body", None) or None,
+                        # Relay redirects untouched so the *client's* redirect
+                        # handling (allow_redirects, history) behaves as it would
+                        # against the real network.
+                        allow_redirects=False,
+                        ssl=True,
+                    ) as real_resp:
+                        body = await real_resp.read()
+                        status = real_resp.status
+                        resp_headers = CIMultiDict(
+                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                        )
+                except _SelfProxyError:
+                    warning_msg = (
+                        f"aiointercept: no handler for {req_method} {url} — "
+                        "the request targeted the mock server itself and was not proxied"
                     )
-            warning_msg = self._diagnose_unmatched(req_method, str(url))
+                except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+                    # Upstream transport failure: surface it as a connection
+                    # error on the client, like the unmatched path does.
+                    logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
+                    if request.transport:
+                        request.transport.close()
+                    return web.Response(status=502, text="Upstream request failed.")
+                else:
+                    return web.Response(status=status, headers=resp_headers, body=body)
+            warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
             if request.transport:
@@ -780,7 +832,7 @@ class aiointercept:  # noqa: N801
         headers: Mapping[str, str] | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
-        callback: Callable[..., CallbackResult | Awaitable[CallbackResult]] | None = None,
+        callback: Callable[..., CallbackResult | Awaitable[CallbackResult | None] | None] | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
     ) -> "MockResponse":
@@ -805,8 +857,10 @@ class aiointercept:  # noqa: N801
             repeat: ``True`` to respond indefinitely; integer N to respond N
                 times; ``False`` or ``0`` to respond once (default).
             content_type: Override the ``Content-Type`` response header.
-            callback: Callable ``(url, *, headers, query, json) → CallbackResult``
-                (sync or async).  Takes precedence over *body* / *json* / *status*.
+            callback: Callable ``(url, *, headers, query, json, data)`` returning
+                a ``CallbackResult`` or ``None`` (sync or async). Accept ``**kwargs``
+                to remain compatible with the full callback argument set. Takes
+                precedence over *body* / *json* / *status*.
             reason: HTTP reason phrase.
             exception: Any truthy value registers a handler that closes the
                 connection, causing :class:`~aiohttp.ClientConnectionError` on the
@@ -834,12 +888,6 @@ class aiointercept:  # noqa: N801
 
             # Map this host → our test server
             self._host_list.add(host)
-            # Record HTTPS-ness eagerly so it survives clear() + re-add. The
-            # SSL-context hook also populates _https_hosts, but only on fresh
-            # TCP connections; keep-alive connections that outlive a clear()
-            # would otherwise lose their scheme tagging.
-            if url.scheme == "https":
-                self._https_hosts.add(host)
 
         if json is not None:
             body = json_module.dumps(json).encode()
@@ -853,6 +901,8 @@ class aiointercept:  # noqa: N801
             content_type = "application/json"
 
         async def handler(request: web.Request) -> web.Response:
+            result: Any = None
+            _headers: Mapping[str, str] | None
             if callable(callback):
                 aiointercept_request = cast("AiointerceptRequest", request)
                 cb_kwargs = aiointercept_request.kwargs
@@ -860,7 +910,10 @@ class aiointercept:  # noqa: N801
                 # rather than request.url, which is always http:// here because
                 # the test server receives the request over plain HTTP.
                 cb_url = aiointercept_request.canonical_url
-                if inspect.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
+                    getattr(callback, "__call__", None)  # noqa: B004
+                ):
+                    async_callback = cast("Callable[..., Coroutine[Any, Any, Any]]", callback)
                     # Async callbacks run on the caller's loop so that
                     # loop-bound primitives (asyncio.Event, asyncio.Queue,
                     # asyncio.Lock created by the test) keep working.
@@ -871,12 +924,17 @@ class aiointercept:  # noqa: N801
                         and caller_loop is not asyncio.get_running_loop()
                     ):
                         result = await asyncio.wrap_future(
-                            asyncio.run_coroutine_threadsafe(callback(cb_url, **cb_kwargs), caller_loop)
+                            asyncio.run_coroutine_threadsafe(async_callback(cb_url, **cb_kwargs), caller_loop)
                         )
                     else:
-                        result = await callback(cb_url, **cb_kwargs)
+                        result = await async_callback(cb_url, **cb_kwargs)
                 else:
                     result = callback(cb_url, **cb_kwargs)
+                if result is not None and not isinstance(result, CallbackResult):
+                    raise TypeError(
+                        f"callback {callback!r} must return a CallbackResult (or None), got {type(result).__name__}"
+                    )
+            if result is not None:
                 _status = result.status
                 _body = result.body
                 _headers = result.headers or {}
@@ -894,53 +952,55 @@ class aiointercept:  # noqa: N801
             # ``_body`` may be bytes/str or an AsyncIterable[bytes]; in the
             # latter case web.Response wraps it in an AsyncIterablePayload and
             # streams it chunked, so we don't special-case streaming here.
+            # Send content_type as a plain header: aiohttp's ``content_type=``
+            # argument rejects parameters such as ``; charset=utf-8``. An explicit
+            # content_type wins over a Content-Type header; copy, never mutate.
+            response_headers = CIMultiDict(_headers or {})
+            if _content_type:
+                response_headers["Content-Type"] = _content_type
             return web.Response(
                 status=_status,
                 body=_body,
-                headers=_headers,
+                headers=response_headers,
                 reason=_reason,
-                content_type=_content_type,
             )
 
         raw: handler_type = handler if not exception else _CLOSE_CONNECTION
         mock_response = MockResponse(raw)
         if repeat is True:
-            if isinstance(url, Pattern):
-                self.patterns_handler[url, method] = mock_response
-                return mock_response
-            handler_url = str(normalize_url(url))
-            self.handlers[handler_url, method] = mock_response
+            # Served forever. If finite responses are already queued it becomes
+            # the tail of that queue; nothing can be queued behind it.
+            mock_response._repeat = True
+            handlers: list[MockResponse] = [mock_response]
         else:
             if repeat is False or repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
-            handlers: list[MockResponse] = [mock_response] * repeat
-            if isinstance(url, Pattern):
-                if (url, method) in self.patterns_handler:
-                    list_pattern_handler = self.patterns_handler[(url, method)]
-                    if isinstance(list_pattern_handler, list):
-                        list_pattern_handler += handlers
-                    else:
-                        raise ValueError(
-                            f"Existing handler for pattern {url} {method} has "
-                            "repeat=True, cannot add more handlers to it."
-                        )
-
-                else:
-                    self.patterns_handler[url, method] = handlers
-                return mock_response
-            handler_url = str(normalize_url(url))
-            if (handler_url, method) in self.handlers:
-                handlers_list = self.handlers[(handler_url, method)]
-                if isinstance(handlers_list, list):
-                    handlers_list += handlers
+            handlers = [mock_response] * repeat
+        if isinstance(url, Pattern):
+            if (url, method) in self.patterns_handler:
+                list_pattern_handler = self.patterns_handler[(url, method)]
+                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                    list_pattern_handler += handlers
                 else:
                     raise ValueError(
-                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                        f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.handlers[handler_url, method] = handlers
+                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+            return mock_response
+        handler_url = str(normalize_url(url))
+        if (handler_url, method) in self.handlers:
+            handlers_list = self.handlers[(handler_url, method)]
+            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+                handlers_list += handlers
+            else:
+                raise ValueError(
+                    f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                )
+        else:
+            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
@@ -979,7 +1039,6 @@ class aiointercept:  # noqa: N801
         self.patterns_handler.clear()
         self._host_list.clear()
         self._patterns_list.clear()
-        self._https_hosts.clear()
 
     def assert_called(self) -> None:
         """Assert that at least one request was made."""
@@ -1057,7 +1116,9 @@ class aiointercept:  # noqa: N801
                 here are checked; auto-added aiohttp headers are ignored.  Set
                 *strict_headers* to compare the full header map.
             strict_headers: When ``True``, the complete set of actual request
-                headers must match *headers* exactly.  Use
+                headers must match *headers* case-insensitively. Repeated values
+                for each name must match in order; use a ``CIMultiDict`` to
+                specify them. Use
                 :data:`unittest.mock.ANY` as a value to accept any value for a
                 specific key (e.g. ``Content-Length``).
             kwargs: Ignored (present for aioresponses API compatibility).
@@ -1101,11 +1162,15 @@ class aiointercept:  # noqa: N801
                 expected_body = data.encode() if isinstance(data, str) else data
                 if actual_body != expected_body:
                     raise _mismatch("Body mismatch", expected_body, actual_body)
-        if strict_headers:
-            actual_headers = dict(request.headers)
-            actual_headers.pop("x-aiointercept-orig-scheme", None)
-            expected_headers = headers or {}
-            if expected_headers != actual_headers:
+        if strict_headers and headers is not mock.ANY:
+            actual_headers = CIMultiDict(request.headers)
+            actual_headers.popall("X-Aiointercept-Orig-Scheme", None)
+            expected_headers = CIMultiDict(headers or {})
+            actual_values = {k: actual_headers.getall(k) for k in {name.lower() for name in actual_headers}}
+            expected_values = {k: expected_headers.getall(k) for k in {name.lower() for name in expected_headers}}
+            if expected_values != actual_values:
+                if len(actual_headers) != len(actual_values) or len(expected_headers) != len(expected_values):
+                    raise _mismatch("Headers mismatch", list(expected_headers.items()), list(actual_headers.items()))
                 raise _mismatch("Headers mismatch", dict(expected_headers), dict(actual_headers))
         elif headers and headers is not mock.ANY:
             actual_headers_proxy = request.headers
