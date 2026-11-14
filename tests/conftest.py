@@ -68,11 +68,22 @@ async def real_upstream() -> AsyncIterator[TestServer]:
         resp.set_cookie("upstream-session", "sekrit")
         return resp
 
+    async def two_cookies(request: web.Request) -> web.Response:
+        resp = web.Response(text="ok")
+        resp.headers.add("Set-Cookie", "a=1; Path=/")
+        resp.headers.add("Set-Cookie", "b=2; Path=/")
+        return resp
+
+    async def echo_dup(request: web.Request) -> web.Response:
+        return web.json_response(request.headers.getall("X-Dup", []))
+
     app = web.Application()
     app.router.add_route("*", "/status/{code}", status)
     app.router.add_get("/gzip", gzipped)
     app.router.add_get("/redirect", redirect)
     app.router.add_get("/cookies", cookies)
+    app.router.add_get("/two-cookies", two_cookies)
+    app.router.add_get("/echo-dup", echo_dup)
     server = TestServer(app)
     await server.start_server()
     yield server

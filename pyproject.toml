@@ -90,6 +90,7 @@ warn_unreachable = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "network: hits the real internet (deselect locally with -m 'not network')",
 ]
