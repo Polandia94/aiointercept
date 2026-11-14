@@ -84,6 +84,42 @@ async def test_explicit_start_stop():
     assert m.handlers == {}
 
 
+def _mock_server_threads() -> set[threading.Thread]:
+    return {t for t in threading.enumerate() if t.name == "aiointercept-server"}
+
+
+async def _enter_again(m, how):
+    if how == "start":
+        await m.start()
+    else:
+        async with m:
+            pass  # pragma: no cover
+
+
+@pytest.mark.parametrize("mock_external_urls", [False, True])
+@pytest.mark.parametrize("second_entry", ["start", "aenter"])
+async def test_start_while_running_raises(mock_external_urls, second_entry):
+    """A second start()/__aenter__ on a running mock raises and leaks nothing."""
+    originals = (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get)
+    threads_before = _mock_server_threads()
+    m = aiointercept(mock_external_urls=mock_external_urls)
+    await m.start()
+    try:
+        with pytest.raises(RuntimeError, match="already"):
+            await _enter_again(m, second_entry)
+        # The running mock is untouched and keeps serving.
+        m.get(f"{m.server_url}/ping", status=200, body=b"pong")
+        async with ClientSession() as session:
+            resp = await session.get(f"{m.server_url}/ping")
+            assert await resp.read() == b"pong"
+    finally:
+        await m.stop()
+        await m.stop()  # clean up even if a second start leaked state
+
+    assert _mock_server_threads() - threads_before == set()
+    assert (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get) == originals
+
+
 # ---------------------------------------------------------------------------
 # URL type variants: str, URL, Pattern
 # ---------------------------------------------------------------------------

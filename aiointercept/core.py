@@ -489,6 +489,8 @@ class aiointercept:  # noqa: N801
         manager. After this returns, :attr:`server_url` is available. Pair every
         ``start()`` with a :meth:`stop`.
         """
+        if self._server_thread is not None:
+            raise RuntimeError("aiointercept is already started; call stop() before starting it again")
         self._caller_loop = asyncio.get_running_loop()
         self.requests.clear()
         self.ordered_requests.clear()
