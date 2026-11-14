@@ -88,6 +88,15 @@ def _mismatch(label: str, expected: Any, actual: Any) -> AssertionError:
     return error
 
 
+def _raw_header_pairs(obj: Any) -> list[tuple[str, str]]:
+    """Return every header as a ``(name, value)`` pair, repeated headers kept apart.
+
+    aiohttp 4 folds repeated headers into one entry in ``.headers``, so read
+    ``raw_headers`` (public on aiohttp 3 and 4), decoded like aiohttp does.
+    """
+    return [(k.decode("utf-8", "surrogateescape"), v.decode("utf-8", "surrogateescape")) for k, v in obj.raw_headers]
+
+
 class AiointerceptRequestKwargs(TypedDict):
     headers: Mapping[str, str]
     query: Mapping[str, Sequence[str]]
@@ -801,7 +810,7 @@ class aiointercept:  # noqa: N801
                         method=request.method,
                         url=real_url,
                         headers=CIMultiDict(
-                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                            (k, v) for k, v in _raw_header_pairs(request) if k.lower() not in _PROXY_REQ_DROP
                         ),
                         data=getattr(request, "captured_body", None) or None,
                         # Relay redirects untouched so the *client's* redirect
@@ -813,7 +822,7 @@ class aiointercept:  # noqa: N801
                         body = await real_resp.read()
                         status = real_resp.status
                         resp_headers = CIMultiDict(
-                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                            (k, v) for k, v in _raw_header_pairs(real_resp) if k.lower() not in _PROXY_RESP_DROP
                         )
                 except _SelfProxyError:
                     warning_msg = (
@@ -1182,7 +1191,7 @@ class aiointercept:  # noqa: N801
                 if actual_body != expected_body:
                     raise _mismatch("Body mismatch", expected_body, actual_body)
         if strict_headers and headers is not mock.ANY:
-            actual_headers = CIMultiDict(request.headers)
+            actual_headers = CIMultiDict(_raw_header_pairs(request))
             actual_headers.popall("X-Aiointercept-Orig-Scheme", None)
             expected_headers = CIMultiDict(headers or {})
             actual_values = {k: actual_headers.getall(k) for k in {name.lower() for name in actual_headers}}
