@@ -1827,7 +1827,7 @@ async def test_add_content_type_argument_wins_over_header():
         m.get("http://ct.test/", body="x", headers=headers, content_type="text/html; charset=utf-8")
         async with session.get("http://ct.test/") as resp:
             assert resp.status == 200
-            assert resp.headers.getall("Content-Type") == ["text/html; charset=utf-8"]
+            assert list(resp.headers.getall("Content-Type")) == ["text/html; charset=utf-8"]
             assert resp.headers["X-Extra"] == "1"
     assert headers == {"content-type": "text/plain", "X-Extra": "1"}
 
@@ -2336,7 +2336,8 @@ async def test_passthrough_proxied_repeated_response_headers_preserved(real_upst
     ):
         m.get(re.compile(r"^http://never\.test/$"))
         resp = await session.get(f"{base}/two-cookies")
-        assert resp.headers.getall("Set-Cookie") == ["a=1; Path=/", "b=2; Path=/"]
+        cookies = [v for k, v in resp.raw_headers if k.lower() == b"set-cookie"]
+        assert cookies == [b"a=1; Path=/", b"b=2; Path=/", b"c=3; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/"]
 
 
 async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):

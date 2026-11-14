@@ -72,10 +72,11 @@ async def real_upstream() -> AsyncIterator[TestServer]:
         resp = web.Response(text="ok")
         resp.headers.add("Set-Cookie", "a=1; Path=/")
         resp.headers.add("Set-Cookie", "b=2; Path=/")
+        resp.headers.add("Set-Cookie", "c=3; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/")
         return resp
 
     async def echo_dup(request: web.Request) -> web.Response:
-        return web.json_response(request.headers.getall("X-Dup", []))
+        return web.json_response(request.headers.getall("X-Dup") if "X-Dup" in request.headers else [])
 
     app = web.Application()
     app.router.add_route("*", "/status/{code}", status)
