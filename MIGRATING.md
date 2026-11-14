@@ -91,6 +91,53 @@ async def mock_http():
 - Bare IP addresses are not intercepted
 - `call_args_list` is not implemented; use `m.requests` (grouped by `(METHOD, URL)`) or `m.ordered_requests` (arrival order). `m.call_count` (all requests) and each registration's `call_count` are available
 - `timeout=` passthrough is not supported
+- Idempotent requests are retried by aiohttp after a disconnect (see below)
+
+## Automatic retries of idempotent requests
+
+aiointercept answers over a real connection. When it wants a request to fail (an
+`exception=True` registration, or no matching handler), it closes the connection, and
+aiohttp's client retries the request once when the server disconnects before responding.
+aiohttp only does this for idempotent methods: GET, HEAD, OPTIONS, TRACE, PUT and DELETE.
+POST and PATCH are not retried.
+
+This has two consequences for idempotent methods:
+
+- One unmatched GET reaches the mock twice. It appears twice in `m.requests`, `m.call_count`
+  is 2 and the "no handler" warning is logged twice. `m.assert_called_once()` fails after a
+  single unmatched GET. An unmatched POST reaches the mock once.
+- With a failure queued before a success, the first call does not raise. The retry consumes
+  the success registration and the caller gets 200:
+
+  ```python
+  m.get(url, exception=True)
+  m.get(url, payload={"ok": True})
+
+  await session.get(url)  # 200, not ClientConnectionError
+  ```
+
+  With aioresponses the first call raises, because aioresponses never opens a connection.
+
+Workarounds:
+
+- Register the failure twice, so it also absorbs the retry:
+
+  ```python
+  boom = m.get(url, exception=True, repeat=2)  # first attempt + aiohttp's automatic retry
+  m.get(url, payload={"ok": True})
+
+  with pytest.raises(aiohttp.ClientConnectionError):
+      await session.get(url)  # raises
+  resp = await session.get(url)  # 200
+  ```
+
+  After this, `boom.call_count == 2` and `m.call_count == 3`.
+- Use a non-idempotent method (POST or PATCH) in the test, where the code under test allows it.
+  Those requests are never retried.
+
+An `exception=True` registration on its own already raises for every method, because the
+retry finds no handler and is closed too. Only the counts and the "fail once, then succeed"
+sequence are affected.
 
 ## Reading captured requests
 
