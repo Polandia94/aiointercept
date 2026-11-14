@@ -183,6 +183,14 @@ Repeat and response queuing
     m.post(url, status=409, payload={"error": "conflict"})
     # First POST -> 201, second POST -> 409, third POST -> ClientConnectionError
 
+.. note::
+
+   aiohttp retries idempotent methods (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once
+   after a disconnect. An ``exception=True`` registration followed by a success needs
+   ``repeat=2`` to make the first call raise, and an unmatched GET is recorded twice.
+   See the migration guide (``MIGRATING.md``, "Automatic retries of idempotent
+   requests") for details and workarounds.
+
 
 Streaming response bodies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
