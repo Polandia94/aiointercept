@@ -36,3 +36,25 @@ recent** call to the given URL.
     # Check form-encoded body:
     m.assert_called_with(url, method="POST",
                          data={"username": "alice", "password": "s3cr3t"})
+
+URL credentials
+---------------
+
+Register and assert URLs without a username or password. aiohttp moves
+credentials from a request URL into the ``Authorization`` header, so the mock
+server sees a URL without them. To verify credentials, check that header explicitly:
+URL matching and ``assert_any_call`` do not check authentication.
+
+.. code-block:: python
+
+    import aiohttp
+    from aiointercept import aiointercept
+
+    url = "http://example.com/x"
+    auth = aiohttp.BasicAuth("user", "password")
+    async with aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        async with aiohttp.ClientSession() as session:
+            await session.get(url, auth=auth)
+
+        m.assert_called_with(url, headers={"Authorization": auth.encode()})
