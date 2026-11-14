@@ -367,6 +367,18 @@ class MockResponse:
         return await fn(request)
 
 
+def _passthrough_host(entry: str) -> str:
+    """Normalize a host-only passthrough entry."""
+    host = ""
+    host_only = ":" not in entry or (entry.startswith("[") and entry.endswith("]"))
+    if host_only and not any(c in entry for c in "/?#@\\") and not any(c.isspace() for c in entry):
+        with suppress(ValueError):
+            host = normalize_host(URL(f"//{entry}").raw_host or "")
+    if not host:
+        raise ValueError(f"passthrough entry {entry!r} must be a host without a port")
+    return host
+
+
 class aiointercept:  # noqa: N801
     """Mock :mod:`aiohttp` requests by routing them through a real test server.
 
@@ -412,7 +424,11 @@ class aiointercept:  # noqa: N801
                 (default), only requests sent to :attr:`server_url` are
                 intercepted and no global state is modified.
             passthrough: Hosts whose requests bypass the mock and reach the real
-                network. Requires ``mock_external_urls=True``.
+                network. Entries must be hosts (``api.example.com`` or
+                ``[::1]``), without ports or URLs. Every port and path on
+                that host passes through.
+                Invalid entries raise :class:`ValueError`. Requires
+                ``mock_external_urls=True``.
             passthrough_unmatched: When ``True``, proxy every unmatched request
                 to the real network instead of failing it. Requires
                 ``mock_external_urls=True``.
@@ -437,13 +453,16 @@ class aiointercept:  # noqa: N801
         if passthrough_unmatched and not mock_external_urls:
             raise ValueError("passthrough_unmatched=True requires mock_external_urls=True")
 
+        if passthrough and not mock_external_urls:
+            raise ValueError("passthrough requires mock_external_urls=True")
+
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
         self._mock_external_urls = mock_external_urls
 
         if mock_external_urls:
             for p in self._passthrough_urls:
-                self._passthrough_hosts.append(normalize_host(URL(p).raw_host or p))
+                self._passthrough_hosts.append(_passthrough_host(p))
 
         self.param = param
         self.passthrough_unmatched = passthrough_unmatched
