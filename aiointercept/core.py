@@ -9,7 +9,7 @@ import threading
 import typing
 import warnings
 import weakref
-from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
 from functools import wraps
 from re import Pattern
@@ -812,7 +812,7 @@ class aiointercept:  # noqa: N801
         headers: Mapping[str, str] | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
-        callback: Callable[..., CallbackResult | Awaitable[CallbackResult]] | None = None,
+        callback: Callable[..., CallbackResult | Awaitable[CallbackResult | None] | None] | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
     ) -> "MockResponse":
@@ -837,8 +837,10 @@ class aiointercept:  # noqa: N801
             repeat: ``True`` to respond indefinitely; integer N to respond N
                 times; ``False`` or ``0`` to respond once (default).
             content_type: Override the ``Content-Type`` response header.
-            callback: Callable ``(url, *, headers, query, json) → CallbackResult``
-                (sync or async).  Takes precedence over *body* / *json* / *status*.
+            callback: Callable ``(url, *, headers, query, json, data)`` returning
+                a ``CallbackResult`` or ``None`` (sync or async). Accept ``**kwargs``
+                to remain compatible with the full callback argument set. Takes
+                precedence over *body* / *json* / *status*.
             reason: HTTP reason phrase.
             exception: Any truthy value registers a handler that closes the
                 connection, causing :class:`~aiohttp.ClientConnectionError` on the
@@ -879,6 +881,8 @@ class aiointercept:  # noqa: N801
             content_type = "application/json"
 
         async def handler(request: web.Request) -> web.Response:
+            result: Any = None
+            _headers: Mapping[str, str] | None
             if callable(callback):
                 aiointercept_request = cast("AiointerceptRequest", request)
                 cb_kwargs = aiointercept_request.kwargs
@@ -886,7 +890,10 @@ class aiointercept:  # noqa: N801
                 # rather than request.url, which is always http:// here because
                 # the test server receives the request over plain HTTP.
                 cb_url = aiointercept_request.canonical_url
-                if inspect.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
+                    getattr(callback, "__call__", None)  # noqa: B004
+                ):
+                    async_callback = cast("Callable[..., Coroutine[Any, Any, Any]]", callback)
                     # Async callbacks run on the caller's loop so that
                     # loop-bound primitives (asyncio.Event, asyncio.Queue,
                     # asyncio.Lock created by the test) keep working.
@@ -897,12 +904,17 @@ class aiointercept:  # noqa: N801
                         and caller_loop is not asyncio.get_running_loop()
                     ):
                         result = await asyncio.wrap_future(
-                            asyncio.run_coroutine_threadsafe(callback(cb_url, **cb_kwargs), caller_loop)
+                            asyncio.run_coroutine_threadsafe(async_callback(cb_url, **cb_kwargs), caller_loop)
                         )
                     else:
-                        result = await callback(cb_url, **cb_kwargs)
+                        result = await async_callback(cb_url, **cb_kwargs)
                 else:
                     result = callback(cb_url, **cb_kwargs)
+                if result is not None and not isinstance(result, CallbackResult):
+                    raise TypeError(
+                        f"callback {callback!r} must return a CallbackResult (or None), got {type(result).__name__}"
+                    )
+            if result is not None:
                 _status = result.status
                 _body = result.body
                 _headers = result.headers or {}
