@@ -812,7 +812,7 @@ class aiointercept:  # noqa: N801
         headers: Mapping[str, str] | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
-        callback: Callable[..., CallbackResult | Awaitable[CallbackResult]] | None = None,
+        callback: Callable[..., CallbackResult | None | Awaitable[CallbackResult | None]] | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
     ) -> "MockResponse":
@@ -837,8 +837,10 @@ class aiointercept:  # noqa: N801
             repeat: ``True`` to respond indefinitely; integer N to respond N
                 times; ``False`` or ``0`` to respond once (default).
             content_type: Override the ``Content-Type`` response header.
-            callback: Callable ``(url, *, headers, query, json) → CallbackResult``
-                (sync or async).  Takes precedence over *body* / *json* / *status*.
+            callback: Callable ``(url, *, headers, query, json, data)`` returning
+                a ``CallbackResult`` or ``None`` (sync or async). Accept ``**kwargs``
+                to remain compatible with the full callback argument set. Takes
+                precedence over *body* / *json* / *status*.
             reason: HTTP reason phrase.
             exception: Any truthy value registers a handler that closes the
                 connection, causing :class:`~aiohttp.ClientConnectionError` on the
