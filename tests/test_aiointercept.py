@@ -532,7 +532,7 @@ async def test_passthrough_host_is_allowed(real_upstream: TestServer, passthroug
     upstream_url = URL(f"{upstream_base(real_upstream)}/status/200")
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[str(upstream_url.with_host(passthrough_host))]) as m,
+        aiointercept(mock_external_urls=True, passthrough=[passthrough_host]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")
@@ -547,7 +547,7 @@ async def test_passthrough_host_with_unrelated_regex(real_upstream: TestServer) 
     upstream_url = f"{upstream_base(real_upstream)}/status/200"
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[upstream_base(real_upstream)]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]) as m,
     ):
         m.get(re.compile(r"^http://other\.test/.*$"), status=204)
         real = await session.get(upstream_url)
@@ -562,7 +562,7 @@ async def test_passthrough_host_beats_matching_regex(real_upstream: TestServer) 
     upstream_url = f"{upstream_base(real_upstream)}/status/200"
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[upstream_base(real_upstream)]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]) as m,
     ):
         m.get(re.compile(r"^http://localhost:.*$"), status=204)
         real = await session.get(upstream_url)
@@ -575,7 +575,7 @@ async def test_exact_url_on_passthrough_host_is_mocked(real_upstream: TestServer
     base = upstream_base(real_upstream)
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[base]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]) as m,
     ):
         m.get(f"{base}/status/200", status=204)
         resp = await session.get(f"{base}/status/200")
@@ -1220,13 +1220,11 @@ async def test_url_with_different_query_param():
 @pytest.mark.parametrize(
     ("entry", "host"),
     [
-        ("https://real.example.com/path", "real.example.com"),
         ("real.example.com", "real.example.com"),
         ("real.example.com.", "real.example.com"),
         ("example.com:8080", "example.com"),
-        ("example.com:8080/path", "example.com"),
+        ("[::1]", "::1"),
         ("[::1]:8080", "::1"),
-        ("http://[::1]:8080/x", "::1"),
     ],
 )
 def test_passthrough_entry_reduced_to_host(entry: str, host: str) -> None:
@@ -1234,10 +1232,33 @@ def test_passthrough_entry_reduced_to_host(entry: str, host: str) -> None:
     assert m._passthrough_hosts == [host]
 
 
-@pytest.mark.parametrize("entry", ["not-a-valid-url:::", "", "http://"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "not-a-valid-url:::",
+        "",
+        ".",
+        "http://",
+        "https://example.com",
+        "https://example.com/path",
+        "http://[::1]:8080/x",
+        "example.com/path",
+        "example.com:8080/path",
+        "example.com/",
+        "example.com?query",
+        "example.com#fragment",
+        "user@example.com",
+        "example.com:",
+        "example.com:abc",
+        "example.com:65536",
+        "example.com\\path",
+        "example .com",
+    ],
+)
 def test_passthrough_unparseable_entry_raises(entry: str) -> None:
-    with pytest.raises(ValueError, match="passthrough"):
+    with pytest.raises(ValueError, match="passthrough") as exc:
         aiointercept(mock_external_urls=True, passthrough=[entry])
+    assert repr(entry) in str(exc.value)
 
 
 def test_passthrough_requires_mock_external_urls() -> None:
@@ -1246,14 +1267,16 @@ def test_passthrough_requires_mock_external_urls() -> None:
 
 
 async def test_passthrough_host_and_port_without_scheme(real_upstream: TestServer) -> None:
-    """``host:port`` (no scheme) is accepted and lets the host through."""
+    """``host:port`` lets the host through on other ports and paths too."""
+    other_port = real_upstream.port + 1 if real_upstream.port < 65535 else real_upstream.port - 1
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=[f"localhost:{real_upstream.port}"]),
+        aiointercept(mock_external_urls=True, passthrough=[f"localhost:{other_port}"]),
     ):
-        real = await session.get(f"{upstream_base(real_upstream)}/status/200")
-        assert real.status == 200
-        assert await real.text() == "upstream"
+        for status in (200, 201):
+            real = await session.get(f"{upstream_base(real_upstream)}/status/{status}")
+            assert real.status == status
+            assert await real.text() == "upstream"
 
 
 # ---------------------------------------------------------------------------
@@ -1413,10 +1436,10 @@ async def test_mock_https_url():
 @pytest.mark.network
 @network_retry
 async def test_passthrough_https_explicit():
-    """An https:// URL in the passthrough list reaches the real server with TLS."""
+    """A passthrough host reaches the real server with TLS."""
     async with (
         ClientSession() as session,
-        aiointercept(mock_external_urls=True, passthrough=["https://httpbingo.org/status/201"]) as m,
+        aiointercept(mock_external_urls=True, passthrough=["httpbingo.org"]) as m,
     ):
         m.get("http://example.com/", status=200)
         mocked = await session.get("http://example.com/")

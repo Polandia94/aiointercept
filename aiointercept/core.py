@@ -368,16 +368,14 @@ class MockResponse:
 
 
 def _passthrough_host(entry: str) -> str:
-    """Reduce a passthrough entry (URL, bare host or ``host:port``) to its host."""
-    host = URL(entry).raw_host
-    if host is None and "://" not in entry:
-        try:
-            host = URL(f"//{entry}").raw_host
-        except ValueError:
-            host = None
+    """Reduce a host or ``host:port`` entry to its host."""
+    host = ""
+    if not any(c in entry for c in "/?#@\\") and not any(c.isspace() for c in entry) and not entry.endswith(":"):
+        with suppress(ValueError):
+            host = normalize_host(URL(f"//{entry}").raw_host or "")
     if not host:
-        raise ValueError(f"passthrough entry {entry!r} has no host")
-    return normalize_host(host)
+        raise ValueError(f"passthrough entry {entry!r} must be a host or host:port")
+    return host
 
 
 class aiointercept:  # noqa: N801
@@ -425,10 +423,10 @@ class aiointercept:  # noqa: N801
                 (default), only requests sent to :attr:`server_url` are
                 intercepted and no global state is modified.
             passthrough: Hosts whose requests bypass the mock and reach the real
-                network. Entries are hosts: a URL (``https://api.example.com/v1``),
-                a bare host (``api.example.com``) or ``host:port`` is reduced to
-                its host, so every port and path on that host passes through.
-                An entry without a host raises :class:`ValueError`. Requires
+                network. Entries must be bare hosts (``api.example.com``) or
+                ``host:port`` (``api.example.com:443``), not URLs. The port is
+                ignored, so every port and path on that host passes through.
+                Invalid entries raise :class:`ValueError`. Requires
                 ``mock_external_urls=True``.
             passthrough_unmatched: When ``True``, proxy every unmatched request
                 to the real network instead of failing it. Requires
