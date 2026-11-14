@@ -86,7 +86,7 @@ async def mock_http():
 - `assert_called_with(url, ssl=False)` → drop client-only kwargs like `ssl=`, `timeout=`; they are silently ignored but a `DeprecationWarning` is emitted
 - Callbacks only receive `headers`, `query`, `data`, and `json` (no client-side kwargs)
 - Exceptions raised inside a callback do not reach the code that made the request: the client gets an HTTP 500 response and the traceback is logged on the `aiohttp.server` logger (aioresponses propagates the exception). To make the client see a connection error, register `exception=True` instead
-- `passthrough` entries are matched by host, not by URL prefix: without exact-URL registrations on that host, `passthrough=["https://api.example.com/v1"]` lets every path and port on `api.example.com` through (aioresponses matches URL prefixes). An exact-URL registration takes precedence and causes the whole host to be intercepted; unmatched URLs then fail unless `passthrough_unmatched=True`
+- `passthrough` accepts hosts without ports, not URLs, and matches by host rather than URL prefix: without exact-URL registrations on that host, `passthrough=["api.example.com"]` lets every path and port on `api.example.com` through (aioresponses matches URL prefixes). An exact-URL registration takes precedence and causes the whole host to be intercepted; unmatched URLs then fail unless `passthrough_unmatched=True`
 - `request.kwargs` is a deprecated compatibility shim — read captured requests natively instead (see below)
 - Bare IP addresses are not intercepted
 - `call_args_list` is not implemented; use `m.requests` (grouped by `(METHOD, URL)`) or `m.ordered_requests` (arrival order). `m.call_count` (all requests) and each registration's `call_count` are available

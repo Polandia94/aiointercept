@@ -306,10 +306,11 @@ available with ``mock_external_urls=True``.
     # Specific hosts bypass the mock:
     async with aiointercept(
         mock_external_urls=True,
-        passthrough=["https://real-api.example.com"],
+        passthrough=["real-api.example.com"],
     ) as m:
         m.get("https://mocked.example.com/data", payload={"mocked": True})
-        # Requests to real-api.example.com go to the real server.
+        # Requests to real-api.example.com go to the real server. Entries are
+        # hosts, so every port and path on that host passes through.
 
     # All unmatched requests go to the real server:
     async with aiointercept(
@@ -404,8 +405,10 @@ Constructor parameters
    * - ``passthrough``
      - ``list[str] | None``
      - ``None``
-     - Hosts whose requests bypass the mock and reach the real network.
-       Requires ``mock_external_urls=True``.
+     - Hosts whose requests bypass the mock and reach the real network. Entries
+       must be hosts (including bracketed IPv6), without ports or URLs. Every
+       port and path on that host passes through; invalid entries raise
+       ``ValueError``. Requires ``mock_external_urls=True``.
    * - ``passthrough_unmatched``
      - ``bool``
      - ``False``

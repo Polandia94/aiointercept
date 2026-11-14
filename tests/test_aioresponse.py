@@ -360,7 +360,7 @@ class AIOResponsesTestCase(AsyncTestCase):
             ext_rep = await self.session.get(URL(external_api))
             return api_resp, ext_rep
 
-        async with aiointercept(True, passthrough=[external_api]) as m:
+        async with aiointercept(True, passthrough=["httpbingo.org"]) as m:
             m.get(self.url, status=200)
             api, ext = await doit()
 
@@ -377,7 +377,7 @@ class AIOResponsesTestCase(AsyncTestCase):
             ext_rep = await self.session.get(URL(external_api), params=params)
             return ext_rep
 
-        async with aiointercept(True, passthrough=[external_api]) as m:  #  noqa: F841
+        async with aiointercept(True, passthrough=["httpbingo.org"]) as m:  #  noqa: F841
             params = {"foo": "bar"}
             ext = await doit(params=params)
             self.assertEqual(ext.status, 200)
