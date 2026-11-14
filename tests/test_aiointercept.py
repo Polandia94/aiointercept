@@ -2423,6 +2423,30 @@ async def test_streaming_response_body():
     assert b"".join(received) == b"".join(chunks)
 
 
+async def test_stop_is_bounded_while_response_is_in_flight():
+    """``stop()`` must not wait for a still-open endless streaming response."""
+
+    async def forever():
+        while True:
+            yield b"data: tick\n\n"
+            await asyncio.sleep(0.05)
+
+    session = ClientSession()
+    m = aiointercept()
+    await m.start()
+    m.get(f"{m.server_url}/sse", body=forever(), content_type="text/event-stream")
+    resp = await session.get(f"{m.server_url}/sse")
+    await resp.content.readany()
+    stop_task = asyncio.ensure_future(m.stop())
+    done, _ = await asyncio.wait({stop_task}, timeout=10)
+    # Dropping the connection lets a slow shutdown finish, so a failure here
+    # cannot hang the rest of the suite.
+    resp.close()
+    await session.close()
+    await stop_task
+    assert done, "stop() did not return within 10 s while a response was still open"
+
+
 # ---------------------------------------------------------------------------
 # Streaming request
 # ---------------------------------------------------------------------------
