@@ -798,6 +798,24 @@ async def test_add_without_server_raises():
         m.add("http://example.com/", method="GET", status=200)
 
 
+@pytest.mark.parametrize("attr", ["server_url", "server_host", "server_port"])
+async def test_server_attrs_before_start_raise_runtime_error(attr):
+    """Reading server_url/server_host/server_port before start() raises a clear RuntimeError."""
+    m = aiointercept()
+    with pytest.raises(RuntimeError, match="Server not started"):
+        getattr(m, attr)
+
+
+async def test_server_attrs_after_start_and_stop():
+    """The server attributes are set while running and keep their last values after stop()."""
+    async with aiointercept() as m:
+        host, port, url = m.server_host, m.server_port, m.server_url
+        assert isinstance(host, str)
+        assert isinstance(port, int)
+        assert url == f"http://{host}:{port}"
+    assert (m.server_host, m.server_port, m.server_url) == (host, port, url)
+
+
 async def test_add_url_without_host_raises():
     """A URL with no extractable host raises ValueError."""
     async with aiointercept() as m:
