@@ -41,6 +41,11 @@ def network_retry(fn: F) -> F:
 GZIP_PAYLOAD: dict[str, Any] = {"gzipped": True, "padding": "x" * 2048}
 
 
+def _raw_lines(request: web.Request, name: bytes) -> list[str]:
+    """Each separate header line named ``name``, in order (not re-split like ``getall``)."""
+    return [v.decode() for k, v in request.raw_headers if k.lower() == name]
+
+
 @pytest.fixture
 async def real_upstream() -> AsyncIterator[TestServer]:
     """A local aiohttp server standing in for "the real internet".
@@ -76,7 +81,16 @@ async def real_upstream() -> AsyncIterator[TestServer]:
         return resp
 
     async def echo_dup(request: web.Request) -> web.Response:
-        return web.json_response(request.headers.getall("X-Dup") if "X-Dup" in request.headers else [])
+        return web.json_response(_raw_lines(request, b"x-dup"))
+
+    async def echo_cookie_lines(request: web.Request) -> web.Response:
+        return web.json_response(_raw_lines(request, b"cookie"))
+
+    async def two_links(request: web.Request) -> web.Response:
+        resp = web.Response(text="ok")
+        resp.headers.add("Link", '<https://a.test/>; rel="next"')
+        resp.headers.add("Link", '<https://b.test/>; rel="prev"')
+        return resp
 
     app = web.Application()
     app.router.add_route("*", "/status/{code}", status)
@@ -85,6 +99,8 @@ async def real_upstream() -> AsyncIterator[TestServer]:
     app.router.add_get("/cookies", cookies)
     app.router.add_get("/two-cookies", two_cookies)
     app.router.add_get("/echo-dup", echo_dup)
+    app.router.add_get("/echo-cookie-lines", echo_cookie_lines)
+    app.router.add_get("/two-links", two_links)
     server = TestServer(app)
     await server.start_server()
     yield server
