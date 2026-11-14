@@ -812,7 +812,7 @@ class aiointercept:  # noqa: N801
         headers: Mapping[str, str] | None = None,
         repeat: bool | int = False,
         content_type: str | None = None,
-        callback: Callable[..., CallbackResult | None | Awaitable[CallbackResult | None]] | None = None,
+        callback: Callable[..., CallbackResult | Awaitable[CallbackResult | None] | None] | None = None,
         reason: str | None = None,
         exception: Exception | bool | None = None,
     ) -> "MockResponse":
