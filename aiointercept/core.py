@@ -413,7 +413,6 @@ class aiointercept:  # noqa: N801
         passthrough: Sequence[str] | None = None,
         passthrough_unmatched: bool = False,
         param: str | None = None,
-        *,
         server_ssl: "SSLContext | None" = None,
         **kwargs: Any,
     ) -> None:
