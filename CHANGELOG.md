@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Only supported with `mock_external_urls=False`.
+- `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Also works with `mock_external_urls=True`: intercepted `https://` requests get a real TLS handshake using the client's own `ssl=` settings (the certificate must cover every intercepted hostname), and intercepted `http://` requests are served by an extra plain-HTTP listener.
 - Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
 
 ### Changed

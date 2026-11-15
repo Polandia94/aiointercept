@@ -2809,3 +2809,21 @@ async def test_server_ssl_intercept_nested_outer_plain_inner_tls(
 async def test_server_url_default_is_http() -> None:
     async with aiointercept() as m:
         assert m.server_url.startswith("http://")
+
+
+async def test_server_ssl_intercept_does_not_proxy_into_plain_listener(
+    tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext], caplog
+) -> None:
+    """The extra plain-HTTP listener counts as the mock itself for the
+    self-proxy guard of passthrough_unmatched."""
+    server_ctx, _ = tls_intercept_contexts
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with (
+        ClientSession(timeout=timeout) as session,
+        aiointercept(server_ssl=server_ctx, mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        assert m._plain_port is not None
+        with caplog.at_level(logging.WARNING, logger="aiointercept"), pytest.raises(ClientConnectionError):
+            await session.post(f"http://{m.server_host}:{m._plain_port}/typo")
+        assert m.call_count == 1
+        assert "targeted the mock server itself" in caplog.text

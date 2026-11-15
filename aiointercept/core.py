@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import difflib
 import inspect
 import json as json_module
@@ -162,6 +163,14 @@ _active_instances: "list[aiointercept]" = []
 # install/remove so the per-connection hot paths (_resolution_target,
 # _shared_ssl_context) never take _patch_lock.
 _active_snapshot: "tuple[aiointercept, ...]" = ()
+# ``(normalized host, is_tls)`` for the connection the current task is opening
+# to a ``server_ssl`` mock. aiohttp calls ``_get_ssl_context`` synchronously
+# right before awaiting ``_resolve_host`` in the same task, so the resolver can
+# pick the TLS or the plain listener. The host is stored so a stale value left
+# by another connection is never trusted.
+_conn_tls: "contextvars.ContextVar[tuple[str, bool] | None]" = contextvars.ContextVar(
+    "aiointercept_conn_tls", default=None
+)
 
 
 def _refresh_snapshot() -> None:
@@ -170,11 +179,11 @@ def _refresh_snapshot() -> None:
     _active_snapshot = tuple(reversed(_active_instances))
 
 
-def _make_resolve_result(host: str, inst: "aiointercept") -> "ResolveResult":
+def _make_resolve_result(host: str, inst: "aiointercept", port: int) -> "ResolveResult":
     return ResolveResult(
         hostname=host,
         host=inst.server_host,
-        port=inst.server_port,
+        port=port,
         family=socket.AF_INET,
         proto=0,
         flags=0,
@@ -219,7 +228,12 @@ async def _shared_resolve_host(
     # passthrough hosts keep normal DNS caching.
     inst = _resolution_target(host)
     if inst is not None:
-        return [_make_resolve_result(host, inst)]
+        mock_port = inst.server_port
+        if inst._plain_port is not None and _conn_tls.get() != (normalize_host(host), True):
+            # server_ssl instance: anything not recorded as TLS for this host
+            # by _shared_ssl_context goes to the plain-HTTP listener.
+            mock_port = inst._plain_port
+        return [_make_resolve_result(host, inst, mock_port)]
     return cast("list[ResolveResult]", await _real_resolve_host(connector_self, host, port, traces))
 
 
@@ -237,7 +251,8 @@ async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> 
         return None
     transport = conn.transport
     peer = transport.get_extra_info("peername") if transport is not None else None
-    if peer is not None and peer[0] == inst.server_host and peer[1] == inst.server_port:
+    port = inst.server_port if inst._plain_port is None or key.is_ssl else inst._plain_port
+    if peer is not None and peer[0] == inst.server_host and peer[1] == port:
         return conn
     conn.close()
     return None
@@ -246,7 +261,13 @@ async def _shared_get(connector_self: "TCPConnector", key: Any, traces: Any) -> 
 def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") -> "SSLContext | None":
     # TLS is stripped exactly when the host is routed to a mock server, so
     # this must agree with _shared_resolve_host (one source of truth).
-    if (host := req.url.raw_host) is not None and _resolution_target(host) is not None:
+    if (host := req.url.raw_host) is not None and (inst := _resolution_target(host)) is not None:
+        if inst._server_ssl is not None:
+            # The mock serves real TLS: keep the client's own TLS settings and
+            # tell _shared_resolve_host which listener this connection needs.
+            ctx = cast("SSLContext | None", _real_ssl_context(connector_self, req))
+            _conn_tls.set((normalize_host(host), ctx is not None))
+            return ctx
         if req.url.scheme == "https":
             req.headers["X-Aiointercept-Orig-Scheme"] = "https"
         return None
@@ -444,8 +465,13 @@ class aiointercept:  # noqa: N801
                 the last positional argument.
             server_ssl: Server-side :class:`ssl.SSLContext`. When given, the mock
                 test server serves real TLS and :attr:`server_url` starts with
-                ``https://``. Clients must trust the certificate. Only supported
-                with ``mock_external_urls=False``.
+                ``https://``. Clients must trust the certificate. With
+                ``mock_external_urls=True``, intercepted ``https://`` requests
+                get a real TLS handshake using the client's own ``ssl=``
+                settings, so the certificate must cover every intercepted
+                hostname; intercepted ``http://`` requests go to an extra
+                plain-HTTP listener. :attr:`server_url`, :attr:`server_host`
+                and :attr:`server_port` always refer to the TLS listener.
         """
         if kwargs:
             warnings.warn(
@@ -460,12 +486,6 @@ class aiointercept:  # noqa: N801
 
         if passthrough and not mock_external_urls:
             raise ValueError("passthrough requires mock_external_urls=True")
-
-        if server_ssl is not None and mock_external_urls:
-            raise ValueError(
-                "server_ssl is only supported with mock_external_urls=False: "
-                "with interception enabled, requests are redirected to the mock server as plaintext"
-            )
 
         self._server_ssl = server_ssl
         self._passthrough_urls = passthrough or []
@@ -498,6 +518,9 @@ class aiointercept:  # noqa: N801
         self.server: TestServer | None = None
         self._server_host: str | None = None
         self._server_port: int | None = None
+        # Port of the extra plain-HTTP listener used for intercepted http://
+        # requests when server_ssl is combined with mock_external_urls.
+        self._plain_port: int | None = None
         self._bypass_session: aiohttp.ClientSession | None = None
         # The intercept server runs on its own daemon thread + event loop so
         # that callers whose loop gets blocked (e.g. Starlette TestClient
@@ -523,7 +546,10 @@ class aiointercept:  # noqa: N801
 
     @property
     def server_port(self) -> int:
-        """Port the test server is listening on. Raises ``RuntimeError`` before the first start."""
+        """Port the test server is listening on (the TLS listener when ``server_ssl`` is set).
+
+        Raises ``RuntimeError`` before the first start.
+        """
         if self._server_port is None:
             raise RuntimeError("Server not started — use `async with aiointercept() as m:` first.")
         return self._server_port
@@ -606,6 +632,17 @@ class aiointercept:  # noqa: N801
                 app.router.add_route("*", "/{tail:.*}", self._dispatch)
                 self.server = TestServer(app)
                 await self.server.start_server(ssl=self._server_ssl)
+                if self._server_ssl is not None and self._mock_external_urls:
+                    # Intercepted http:// requests need a plaintext listener
+                    # next to the TLS one; it shares the runner, so closing
+                    # the server stops it too.
+                    assert self.server.runner is not None
+                    assert isinstance(self.server.host, str)
+                    sock = socket.socket(socket.AF_INET6 if ":" in self.server.host else socket.AF_INET)
+                    sock.bind((self.server.host, 0))
+                    plain_site = web.SockSite(self.server.runner, sock)
+                    await plain_site.start()
+                    self._plain_port = sock.getsockname()[1]
 
             try:
                 loop.run_until_complete(_start_server())
@@ -666,6 +703,7 @@ class aiointercept:  # noqa: N801
         self._server_loop = None
         self._bypass_session = None
         self.server = None
+        self._plain_port = None
 
     # Decorator support
     def __call__(self, f: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
@@ -686,7 +724,9 @@ class aiointercept:  # noqa: N801
         _orig_resolve_host = _real_resolve_host
         _orig_ssl_ctx = _real_ssl_context
         _orig_get = _real_get
-        own_address = (self.server_host, self.server_port)
+        own_addresses = {(self.server_host, self.server_port)}
+        if self._plain_port is not None:
+            own_addresses.add((self.server_host, self._plain_port))
 
         class _BypassConnector(aiohttp.TCPConnector):
             """Connector wired to the saved originals so proxied requests
@@ -696,7 +736,7 @@ class aiointercept:  # noqa: N801
                 # The original short-circuits IP literals into a result too, so
                 # this sees 127.0.0.1:{port} as well as any name resolving to it.
                 results: list[ResolveResult] = await _orig_resolve_host(self, host, port, traces)
-                if any((r["host"], r["port"]) == own_address for r in results):
+                if any((r["host"], r["port"]) in own_addresses for r in results):
                     raise _SelfProxyError
                 return results
 

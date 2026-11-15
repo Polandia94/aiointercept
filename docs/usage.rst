@@ -102,7 +102,8 @@ cannot modify.
 
 .. warning::
 
-    Mocked ``https://`` hosts do not use TLS. The client talks plain HTTP to
+    Unless ``server_ssl`` is set (see `Serving over HTTPS (real TLS)`_),
+    mocked ``https://`` hosts do not use TLS. The client talks plain HTTP to
     the local mock server, and the original ``https://`` scheme is restored on
     the recorded request and on the URL passed to callbacks. Certificate
     validation, ``ssl=`` options, fingerprint pinning and client certificates
@@ -146,11 +147,48 @@ real TLS. :attr:`~aiointercept.aiointercept.server_url` then starts with
 Instead of passing ``ssl=client_ctx`` on every request you can create the
 session with ``aiohttp.TCPConnector(ssl=client_ctx)``.
 
-.. note::
-    ``server_ssl`` is only supported with ``mock_external_urls=False``;
-    combining it with ``mock_external_urls=True`` raises :class:`ValueError`.
-    With interception enabled, HTTPS requests to intercepted hosts are still
-    served by stripping TLS.
+With interception (``mock_external_urls=True``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``server_ssl`` also works with ``mock_external_urls=True``. Intercepted
+``https://`` requests then get a real TLS handshake against the mock server,
+using the client's own ``ssl=`` settings, which aiointercept leaves untouched.
+Intercepted ``http://`` requests keep working: the mock opens a second,
+plain-HTTP listener for them. :attr:`~aiointercept.aiointercept.server_url`,
+``server_host`` and ``server_port`` refer to the TLS listener.
+
+Because aiohttp verifies the certificate against the hostname of the original
+URL, the certificate must cover **every intercepted hostname**. Use several
+names or wildcards; a host matched only by a regex pattern still needs a
+matching explicit name or wildcard in the certificate.
+
+.. code-block:: python
+
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("api.example.com", "*.example.org").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        m.get("https://api.example.com/users", payload=[{"id": 1}])
+        m.get(re.compile(r"^https://\w+\.example\.org/status$"), payload={"ok": True})
+        m.get("http://api.example.com/health", body="ok")  # plain HTTP still works
+
+        connector = aiohttp.TCPConnector(ssl=client_ctx)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            resp = await session.get("https://api.example.com/users")
+            assert m.last_request.secure
+
+The client must trust the certificate: pass ``ssl=client_ctx`` per request or
+create the session with ``aiohttp.TCPConnector(ssl=client_ctx)``. A request
+made with the default context fails certificate verification
+(:class:`aiohttp.ClientConnectorCertificateError`); ``ssl=False`` works but
+skips verification.
+
+Each instance follows its own setting: when several mocks are active at once,
+hosts claimed by an instance without ``server_ssl`` are still served by
+stripping TLS, as described above.
 
 Registering mock responses
 --------------------------
