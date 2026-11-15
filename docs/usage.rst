@@ -113,6 +113,45 @@ cannot modify.
     ``ssl=`` options do not apply to that upstream connection.
 
 
+Serving over HTTPS (real TLS)
+-----------------------------
+
+Pass an :class:`ssl.SSLContext` as ``server_ssl`` to make the mock server speak
+real TLS. :attr:`~aiointercept.aiointercept.server_url` then starts with
+``https://``. The certificate must be trusted by the client. `trustme
+<https://trustme.readthedocs.io>`_ makes this easy; install it yourself
+(``pip install trustme``), it is not a dependency of aiointercept.
+
+.. code-block:: python
+
+    import ssl
+
+    import aiohttp
+    import trustme
+
+    from aiointercept import aiointercept
+
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    # The mock listens on 127.0.0.1, so the certificate must be issued for it.
+    ca.issue_cert("127.0.0.1").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+
+    async with aiointercept(server_ssl=server_ctx) as m:
+        m.get(f"{m.server_url}/users", payload=[{"id": 1}])
+        async with aiohttp.ClientSession() as session:
+            resp = await session.get(f"{m.server_url}/users", ssl=client_ctx)
+
+Instead of passing ``ssl=client_ctx`` on every request you can create the
+session with ``aiohttp.TCPConnector(ssl=client_ctx)``.
+
+.. note::
+    ``server_ssl`` is only supported with ``mock_external_urls=False``;
+    combining it with ``mock_external_urls=True`` raises :class:`ValueError`.
+    With interception enabled, HTTPS requests to intercepted hosts are still
+    served by stripping TLS.
+
 Registering mock responses
 --------------------------
 
