@@ -2673,9 +2673,137 @@ async def test_server_ssl_untrusted_client_fails(tls_contexts: tuple[ssl.SSLCont
                 await session.get(url)
 
 
-def test_server_ssl_with_mock_external_urls_raises() -> None:
-    with pytest.raises(ValueError, match="mock_external_urls"):
-        aiointercept(server_ssl=ssl.create_default_context(ssl.Purpose.CLIENT_AUTH), mock_external_urls=True)
+@pytest.fixture
+def tls_intercept_contexts() -> tuple[ssl.SSLContext, ssl.SSLContext]:
+    """Server/client contexts whose certificate covers fake intercepted hostnames."""
+    trustme = pytest.importorskip("trustme")
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("api.example.com", "*.example.org").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+    return server_ctx, client_ctx
+
+
+async def test_server_ssl_intercept_https(tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        assert m.server_url.startswith("https://")
+        m.get("https://api.example.com/x", payload={"ok": True})
+        async with (
+            ClientSession(connector=TCPConnector(ssl=client_ctx)) as session,
+            session.get("https://api.example.com/x") as resp,
+        ):
+            assert resp.status == 200
+            assert await resp.json() == {"ok": True}
+        assert m.last_request is not None
+        assert m.last_request.secure
+        assert ("GET", URL("https://api.example.com/x")) in m.requests
+        m.assert_called_with("https://api.example.com/x")
+
+
+async def test_server_ssl_intercept_plain_http(tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        m.get("http://api.example.com/y", payload={"plain": True})
+        async with (
+            ClientSession(connector=TCPConnector(ssl=client_ctx)) as session,
+            session.get("http://api.example.com/y") as resp,
+        ):
+            assert resp.status == 200
+            assert await resp.json() == {"plain": True}
+        assert m.last_request is not None
+        assert not m.last_request.secure
+        m.assert_called_with("http://api.example.com/y")
+
+
+async def test_server_ssl_intercept_keep_alive_and_interleaved(
+    tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        m.get("https://api.example.com/s", payload={"s": True}, repeat=True)
+        m.get("http://api.example.com/p", payload={"p": True}, repeat=True)
+        async with ClientSession(connector=TCPConnector(ssl=client_ctx)) as session:
+            for _ in range(3):
+                async with session.get("https://api.example.com/s") as resp:
+                    assert await resp.json() == {"s": True}
+            for url, expected in [
+                ("http://api.example.com/p", {"p": True}),
+                ("https://api.example.com/s", {"s": True}),
+                ("http://api.example.com/p", {"p": True}),
+                ("https://api.example.com/s", {"s": True}),
+            ]:
+                async with session.get(url) as resp:
+                    assert resp.status == 200
+                    assert await resp.json() == expected
+        assert len(m.requests["GET", URL("https://api.example.com/s")]) == 5
+        assert len(m.requests["GET", URL("http://api.example.com/p")]) == 2
+        assert all(r.secure for r in m.requests["GET", URL("https://api.example.com/s")])
+
+
+async def test_server_ssl_intercept_pattern(tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        m.get(re.compile(r"^https://sub\.example\.org/items/\d+$"), payload={"item": True})
+        async with ClientSession() as session, session.get("https://sub.example.org/items/42", ssl=client_ctx) as resp:
+            assert resp.status == 200
+            assert await resp.json() == {"item": True}
+        m.assert_called_with("https://sub.example.org/items/42")
+
+
+async def test_server_ssl_intercept_default_client_context_fails(
+    tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    server_ctx, _ = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as m:
+        m.get("https://api.example.com/x", payload={"ok": True}, repeat=True)
+        async with ClientSession() as session:
+            with pytest.raises((aiohttp.ClientConnectorCertificateError, aiohttp.ClientSSLError)):
+                await session.get("https://api.example.com/x")
+            async with session.get("https://api.example.com/x", ssl=False) as resp:
+                assert resp.status == 200
+                assert await resp.json() == {"ok": True}
+
+
+async def test_server_ssl_intercept_nested_outer_tls_inner_plain(
+    tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as outer:
+        outer.get("https://api.example.com/outer", payload={"outer": True})
+        async with aiointercept(mock_external_urls=True) as inner:
+            inner.get("https://plain.example.net/inner", payload={"inner": True})
+            async with ClientSession() as session:
+                # The inner instance has no server_ssl: TLS is still stripped,
+                # so the default (verifying) client context is never used.
+                async with session.get("https://plain.example.net/inner") as resp:
+                    assert await resp.json() == {"inner": True}
+                async with session.get("https://api.example.com/outer", ssl=client_ctx) as resp:
+                    assert await resp.json() == {"outer": True}
+        assert inner.last_request is not None
+        assert not inner.last_request.secure
+        inner.assert_called_with("https://plain.example.net/inner")
+        assert outer.last_request is not None
+        assert outer.last_request.secure
+        outer.assert_called_with("https://api.example.com/outer")
+
+
+async def test_server_ssl_intercept_nested_outer_plain_inner_tls(
+    tls_intercept_contexts: tuple[ssl.SSLContext, ssl.SSLContext],
+) -> None:
+    server_ctx, client_ctx = tls_intercept_contexts
+    async with aiointercept(mock_external_urls=True) as outer:
+        outer.get("https://plain.example.net/outer", payload={"outer": True})
+        async with aiointercept(server_ssl=server_ctx, mock_external_urls=True) as inner:
+            inner.get("https://api.example.com/inner", payload={"inner": True})
+            async with ClientSession() as session:
+                async with session.get("https://api.example.com/inner", ssl=client_ctx) as resp:
+                    assert await resp.json() == {"inner": True}
+                async with session.get("https://plain.example.net/outer") as resp:
+                    assert await resp.json() == {"outer": True}
+        inner.assert_called_with("https://api.example.com/inner")
+        outer.assert_called_with("https://plain.example.net/outer")
 
 
 async def test_server_url_default_is_http() -> None:
