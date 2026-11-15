@@ -6,6 +6,7 @@ import functools
 import logging
 import re
 import socket
+import ssl
 import threading
 from io import BytesIO
 from random import uniform
@@ -2636,3 +2637,47 @@ async def test_large_request_body(chunked: bool) -> None:
 
     assert m.last_request is not None
     assert m.last_request.captured_body == b"".join(parts)
+
+
+@pytest.fixture
+def tls_contexts() -> tuple[ssl.SSLContext, ssl.SSLContext]:
+    trustme = pytest.importorskip("trustme")
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("127.0.0.1").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+    return server_ctx, client_ctx
+
+
+async def test_server_ssl_serves_https(tls_contexts: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    server_ctx, client_ctx = tls_contexts
+    async with aiointercept(server_ssl=server_ctx) as m:
+        assert m.server_url.startswith("https://")
+        url = f"{m.server_url}/x"
+        m.get(url, payload={"ok": True})
+        async with ClientSession() as session, session.get(url, ssl=client_ctx) as resp:
+            assert resp.status == 200
+            assert await resp.json() == {"ok": True}
+        m.assert_called_with(url)
+        assert any(str(req_url).startswith("https://") for _, req_url in m.requests)
+
+
+async def test_server_ssl_untrusted_client_fails(tls_contexts: tuple[ssl.SSLContext, ssl.SSLContext]) -> None:
+    server_ctx, _ = tls_contexts
+    async with aiointercept(server_ssl=server_ctx) as m:
+        url = f"{m.server_url}/x"
+        m.get(url, payload={"ok": True})
+        async with ClientSession() as session:
+            with pytest.raises((aiohttp.ClientConnectorCertificateError, aiohttp.ClientSSLError)):
+                await session.get(url)
+
+
+def test_server_ssl_with_mock_external_urls_raises() -> None:
+    with pytest.raises(ValueError, match="mock_external_urls"):
+        aiointercept(server_ssl=ssl.create_default_context(ssl.Purpose.CLIENT_AUTH), mock_external_urls=True)
+
+
+async def test_server_url_default_is_http() -> None:
+    async with aiointercept() as m:
+        assert m.server_url.startswith("http://")
