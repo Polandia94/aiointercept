@@ -400,7 +400,7 @@ async def test_url_repeat_error_mixing_repeat_true_and_list():
 
 
 class _AddDuringIteration(dict):
-    """Pattern registry that runs ``on_iterate`` right after the first item is yielded.
+    """Pattern registry that runs ``on_iterate`` once, right after the first item is yielded.
 
     This forces another thread's ``add()`` to land while ``_dispatch`` is
     iterating the registry, instead of hoping a thread switch happens there.
@@ -413,7 +413,8 @@ class _AddDuringIteration(dict):
     def items(self):
         iterator = iter(super().items())
         yield next(iterator)
-        self._on_iterate()
+        on_iterate, self._on_iterate = self._on_iterate, lambda: None
+        on_iterate()
         yield from iterator
 
 
