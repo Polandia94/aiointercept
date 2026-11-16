@@ -66,6 +66,14 @@ def test_base_without_params_returns_corrected_url(as_str):
             "https://example.com/api?var=%D0%BF%D1%83%D1%82%D1%8C",
             id="non-ascii-pre-encoded",
         ),
+        pytest.param("http://h/a%2Fb", "http://h/a%2Fb", id="encoded-slash-kept"),
+        pytest.param("http://h", "http://h/", id="empty-path-gets-slash"),
+        pytest.param("http://h/a b?x=1", "http://h/a%20b?x=1", id="space-in-path"),
+        pytest.param("http://h/a%20b", "http://h/a%20b", id="encoded-space"),
+        pytest.param("http://h/a%2520b", "http://h/a%2520b", id="encoded-percent"),
+        pytest.param("http://h/a%3Fb", "http://h/a%3Fb", id="encoded-question-mark"),
+        pytest.param("http://h/путь", "http://h/%D0%BF%D1%83%D1%82%D1%8C", id="non-ascii-path"),
+        pytest.param("http://h/a?q=1%2B2", "http://h/a?q=1%2B2", id="encoded-plus-in-query"),
     ],
 )
 def test_normalize_url(original_url, expected_url, as_str):

@@ -19,7 +19,7 @@ def normalize_url(url: "URL | str") -> URL:
     if host := url.raw_host:
         if (normalized_host := normalize_host(host)) != host:
             url = url.with_host(normalized_host)
-        url = url.with_path(url.path or "/")
+        url = url.with_path(url.raw_path or "/", encoded=True)
     return url.with_query(sorted_query)
 
 
