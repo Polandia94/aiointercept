@@ -100,6 +100,9 @@ jobs:
         run: |
           uv venv "$RUNNER_TEMP/wheel-venv"
           uv pip install --python "$RUNNER_TEMP/wheel-venv" dist/*.whl
+          # The pytest11 plugin imports pytest; pytest-asyncio stays out on purpose,
+          # so ep.load() also proves the plugin imports cleanly without it.
+          uv pip install --python "$RUNNER_TEMP/wheel-venv" pytest
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-venv/bin/python" - <<'PY'
           import importlib.metadata as md

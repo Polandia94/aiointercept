@@ -110,7 +110,7 @@ auto-discovered fixtures are available.
         m.assert_called_with(f"{m.server_url}/user/1", method="GET")
 
 Fixtures: ``aiointercept_server`` (session), ``aiointercept_mock``
-(function — use this in tests) and ``aiointercept_options`` (session). If
+(function â€” use this in tests) and ``aiointercept_options`` (session). If
 pytest-asyncio 0.24 or newer is not installed, the first two fail with a
 message saying so.
 
