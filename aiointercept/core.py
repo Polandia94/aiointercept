@@ -830,6 +830,7 @@ class aiointercept:  # noqa: N801
                     # the server loop, which is the loop the session must bind
                     # to, and there is no await between check and assignment.
                     session = self._bypass_session = self._make_bypass_session()
+                proxy_resp: web.StreamResponse | None = None
                 try:
                     async with session.request(
                         method=request.method,
@@ -844,11 +845,20 @@ class aiointercept:  # noqa: N801
                         allow_redirects=False,
                         ssl=True,
                     ) as real_resp:
-                        body = await real_resp.read()
-                        status = real_resp.status
-                        resp_headers = CIMultiDict(
-                            (k, v) for k, v in _header_pairs(real_resp) if k.lower() not in _PROXY_RESP_DROP
+                        # Stream the body through as it arrives, so slow or
+                        # endless upstreams (SSE, long polling) reach the client.
+                        proxy_resp = web.StreamResponse(
+                            status=real_resp.status,
+                            reason=real_resp.reason,
+                            headers=CIMultiDict(
+                                (k, v) for k, v in _header_pairs(real_resp) if k.lower() not in _PROXY_RESP_DROP
+                            ),
                         )
+                        await proxy_resp.prepare(request)
+                        async for chunk in real_resp.content.iter_any():
+                            await proxy_resp.write(chunk)
+                        await proxy_resp.write_eof()
+                        return proxy_resp
                 except _SelfProxyError:
                     warning_msg = (
                         f"aiointercept: no handler for {req_method} {url} — "
@@ -860,9 +870,11 @@ class aiointercept:  # noqa: N801
                     logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
                     if request.transport:
                         request.transport.close()
+                    if proxy_resp is not None and proxy_resp.prepared:
+                        # Headers already relayed: the closed connection makes
+                        # the client see a truncated body, not a clean end.
+                        return proxy_resp
                     return web.Response(status=502, text="Upstream request failed.")
-                else:
-                    return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
