@@ -68,6 +68,27 @@ jobs:
           uv run --no-sync coverage run -m pytest tests/
           uv run --no-sync coverage report --fail-under=99
 
+  dev-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --locked --group tests
+
+      # Python development mode enables asyncio debug mode, ResourceWarnings and
+      # aiohttp's extra checks; the suite turns warnings into errors. The network
+      # tests are skipped so this job does not depend on an external site, and
+      # faulthandler_timeout prints the stuck thread's traceback if a hang returns.
+      - name: Test under python -X dev
+        run: uv run --no-sync python -X dev -m pytest tests/ -m "not network" -o faulthandler_timeout=120
+
   docs:
     runs-on: ubuntu-latest
     steps:

@@ -7,7 +7,11 @@ import logging
 import re
 import socket
 import ssl
+import subprocess
+import sys
+import textwrap
 import threading
+import time
 from io import BytesIO
 from random import uniform
 from unittest import mock
@@ -1116,6 +1120,44 @@ async def test_requests_dict_populated():
         key = ("GET", URL(url))
         assert key in m.requests
         assert len(m.requests[key]) == 2
+
+
+_DEV_MODE_SCRIPT = textwrap.dedent(
+    """
+    import asyncio
+
+    import aiohttp
+
+    from aiointercept import aiointercept
+
+
+    async def main() -> None:
+        async with aiohttp.ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+            m.get("http://example.com/dev", status=200, body="ok")
+            async with session.get("http://example.com/dev") as resp:
+                print("STATUS", resp.status)
+
+
+    asyncio.run(main())
+    """
+)
+
+
+def test_mocked_request_succeeds_in_dev_mode():
+    """aiohttp's dev-mode ``Request.__setattr__`` warns on custom attributes; upgrading must not trigger it.
+
+    ``web.Request.DEBUG`` is fixed at import time, so this runs a subprocess under ``-X dev``.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-X", "dev", "-W", "error::DeprecationWarning", "-c", _DEV_MODE_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    detail = f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "STATUS 200" in proc.stdout, detail
+    assert proc.returncode == 0, detail
 
 
 async def test_aborted_upload_is_not_recorded():
@@ -2264,6 +2306,49 @@ async def test_server_thread_startup_failure_propagates():
 
     assert m._server_thread is None
     assert m._server_loop is None
+
+
+async def test_stop_right_after_start_does_not_hang(monkeypatch):
+    """stop() right after start() must not join a server thread that was never told to stop.
+
+    The server thread is made slow to enter ``run_forever`` to force the race. The
+    start/stop pair runs on a daemon thread joined with a timeout, so a regression
+    fails the test instead of hanging the whole run.
+    """
+    real_new_event_loop = asyncio.new_event_loop
+
+    def slow_new_event_loop():
+        loop = real_new_event_loop()
+        if threading.current_thread().name == "aiointercept-server":
+            real_run_forever = loop.run_forever
+
+            def slow_run_forever():
+                time.sleep(0.5)
+                real_run_forever()
+
+            loop.run_forever = slow_run_forever
+        return loop
+
+    monkeypatch.setattr(asyncio, "new_event_loop", slow_new_event_loop)
+
+    errors: list[BaseException] = []
+
+    async def start_then_stop() -> None:
+        async with aiointercept():
+            pass
+
+    def run() -> None:
+        try:
+            asyncio.run(start_then_stop())
+        except BaseException as e:  # pragma: no cover - only on failure
+            errors.append(e)
+
+    helper = threading.Thread(target=run, name="start-stop-helper", daemon=True)
+    helper.start()
+    helper.join(timeout=10)
+
+    assert not helper.is_alive(), "stop() hung after an immediate start()"
+    assert not errors
 
 
 async def test_aenter_failure_after_server_start_cleans_up():
