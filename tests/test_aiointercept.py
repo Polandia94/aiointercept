@@ -1486,6 +1486,69 @@ async def test_passthrough_unmatched_https_with_patterns():
         assert resp.status == 200
 
 
+async def test_passthrough_https_explicit_local(tls_upstream: tuple[TestServer, ssl.SSLContext]) -> None:
+    """A passthrough host connects directly with the client's own TLS settings."""
+    server, client_ctx = tls_upstream
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]),
+        session.get(f"https://localhost:{server.port}/hello", ssl=client_ctx) as resp,
+    ):
+        assert resp.status == 200
+        assert await resp.text() == "secure upstream"
+
+
+async def test_passthrough_unmatched_https_no_patterns_local(tls_upstream: tuple[TestServer, ssl.SSLContext]) -> None:
+    """With passthrough_unmatched=True and no patterns, HTTPS connects directly."""
+    server, client_ctx = tls_upstream
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get("http://example.com/mocked", status=200, body=b"mocked")
+        assert (await session.get("http://example.com/mocked")).status == 200
+        async with session.get(f"https://localhost:{server.port}/hello", ssl=client_ctx) as resp:
+            assert resp.status == 200
+            assert await resp.text() == "secure upstream"
+
+
+async def test_passthrough_unmatched_https_with_patterns_local(
+    tls_upstream: tuple[TestServer, ssl.SSLContext],
+) -> None:
+    """With a regex registered (all hosts routed to the mock), HTTPS is proxied over real TLS using passthrough_ssl."""
+    server, client_ctx = tls_upstream
+    pattern = re.compile(r"^http://never\.matches/.*$")
+    async with (
+        ClientSession() as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True, passthrough_ssl=client_ctx) as m,
+    ):
+        m.add(pattern, method="GET", status=200, repeat=True)
+        async with session.get(f"https://localhost:{server.port}/hello") as resp:
+            assert resp.status == 200
+            assert await resp.text() == "secure upstream"
+        # a second request on the same kept-alive connection is proxied over HTTPS too
+        async with session.get(f"https://localhost:{server.port}/hello") as resp:
+            assert resp.status == 200
+            assert await resp.text() == "secure upstream"
+
+
+async def test_passthrough_unmatched_https_rejected_without_passthrough_ssl(
+    tls_upstream: tuple[TestServer, ssl.SSLContext],
+) -> None:
+    """Without passthrough_ssl the proxy keeps default verification and rejects a private-CA upstream."""
+    server, _ = tls_upstream
+    pattern = re.compile(r"^http://never\.matches/.*$")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.add(pattern, method="GET", status=200, repeat=True)
+        with pytest.raises(aiohttp.ClientConnectionError):
+            await session.get(f"https://localhost:{server.port}/hello")
+
+
+def test_passthrough_ssl_requires_passthrough_unmatched() -> None:
+    ctx = ssl.create_default_context()
+    with pytest.raises(ValueError, match="passthrough_unmatched"):
+        aiointercept(passthrough_ssl=ctx)
+    with pytest.raises(ValueError, match="passthrough_unmatched"):
+        aiointercept(mock_external_urls=True, passthrough_ssl=ctx)
+
+
 async def test_nested_mock_external_urls_instances():
     """Two nested mock_external_urls=True instances each intercept their own host,
     and the class-level patches are fully restored after both exit."""
