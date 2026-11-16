@@ -435,6 +435,7 @@ class aiointercept:  # noqa: N801
         passthrough_unmatched: bool = False,
         param: str | None = None,
         server_ssl: "SSLContext | None" = None,
+        passthrough_ssl: "SSLContext | None" = None,
         **kwargs: Any,
     ) -> None:
         """Create a mock.
@@ -467,6 +468,13 @@ class aiointercept:  # noqa: N801
                 test server serves real TLS and :attr:`server_url` starts with
                 ``https://``. Clients must trust the certificate. Only supported
                 with ``mock_external_urls=False``.
+            passthrough_ssl: Client-side :class:`ssl.SSLContext` used for the
+                upstream requests the mock proxies because of
+                ``passthrough_unmatched=True`` (for a private CA or client
+                certificate). Defaults to normal certificate verification. It
+                does not apply to hosts listed in ``passthrough``, which connect
+                directly with the client's own TLS settings. Requires
+                ``passthrough_unmatched=True``.
         """
         if kwargs:
             warnings.warn(
@@ -479,6 +487,9 @@ class aiointercept:  # noqa: N801
         if passthrough_unmatched and not mock_external_urls:
             raise ValueError("passthrough_unmatched=True requires mock_external_urls=True")
 
+        if passthrough_ssl is not None and not passthrough_unmatched:
+            raise ValueError("passthrough_ssl requires passthrough_unmatched=True")
+
         if passthrough and not mock_external_urls:
             raise ValueError("passthrough requires mock_external_urls=True")
 
@@ -489,6 +500,7 @@ class aiointercept:  # noqa: N801
             )
 
         self._server_ssl = server_ssl
+        self._passthrough_ssl = passthrough_ssl
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
         self._mock_external_urls = mock_external_urls
@@ -842,7 +854,7 @@ class aiointercept:  # noqa: N801
                         # handling (allow_redirects, history) behaves as it would
                         # against the real network.
                         allow_redirects=False,
-                        ssl=True,
+                        ssl=self._passthrough_ssl or True,
                     ) as real_resp:
                         body = await real_resp.read()
                         status = real_resp.status
