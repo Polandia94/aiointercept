@@ -8,6 +8,7 @@ import aiohttp
 import pytest
 
 from aiointercept import CallbackResult, aiointercept
+from aiointercept.pytest_plugin import _fail_missing_pytest_asyncio
 
 
 async def test_fixture_serves_and_records(aiointercept_mock: aiointercept) -> None:
@@ -92,3 +93,8 @@ def test_missing_pytest_asyncio_explains_itself(pytester: pytest.Pytester, monke
     result = pytester.runpytest_subprocess("-p", "no:asyncio")
     result.assert_outcomes(errors=1)
     result.stdout.fnmatch_lines(["*pytest-asyncio 0.24*aiointercept[[]pytest-asyncio[]]*"])
+
+
+def test_missing_pytest_asyncio_message() -> None:
+    with pytest.raises(pytest.fail.Exception, match=r"pytest-asyncio 0\.24 or newer.*aiointercept\[pytest-asyncio\]"):
+        _fail_missing_pytest_asyncio()

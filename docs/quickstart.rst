@@ -109,14 +109,23 @@ auto-discovered fixtures are available.
             assert resp.status == 200
         m.assert_called_with(f"{m.server_url}/user/1", method="GET")
 
-Fixtures: ``aiointercept_server`` (session) and ``aiointercept_mock``
-(function — use this in tests). Override ``aiointercept_server`` in your
-``conftest.py`` to customize.
+Fixtures: ``aiointercept_server`` (session), ``aiointercept_mock``
+(function � use this in tests) and ``aiointercept_options`` (session). If
+pytest-asyncio 0.24 or newer is not installed, the first two fail with a
+message saying so.
+
+To pass constructor options to the session-wide server, override
+``aiointercept_options`` in your ``conftest.py``:
+
+.. code-block:: python
+
+    @pytest.fixture(scope="session")
+    def aiointercept_options():
+        return {"mock_external_urls": True}
 
 .. note::
 
-    The plugin defaults to ``mock_external_urls=False``. To intercept URLs for
-    the whole session, override ``aiointercept_server`` and pass
-    ``mock_external_urls=True`` — note that the DNS/SSL patches are installed at
-    the class level and stay live for every aiohttp call in the test process
-    (this blocks real network calls).
+    The plugin defaults to ``mock_external_urls=False``. With
+    ``mock_external_urls=True`` the DNS/SSL patches are installed at the class
+    level and stay live for every aiohttp call in the test process for the whole
+    session (this blocks real network calls).
