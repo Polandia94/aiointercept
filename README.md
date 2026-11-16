@@ -100,6 +100,20 @@ The fixture calls `m.clear()` between tests, so registered handlers and recorded
 requests never leak from one test to the next. The session-scoped server itself
 is exposed as `aiointercept_server` if you need it directly.
 
+To pass options to the session-wide server (for example `mock_external_urls=True`,
+`passthrough=[...]` or `passthrough_unmatched=True`), override the
+`aiointercept_options` fixture in your `conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+def aiointercept_options():
+    return {"mock_external_urls": True}
+```
+
+With `mock_external_urls=True` the connector patches stay installed for the whole
+test session. If pytest-asyncio 0.24 or newer is missing, using the fixtures fails
+with a message saying so.
+
 ## Coming from aioresponses?
 
 `aiointercept` aims to be a near drop-in replacement. The [migration guide](https://aiointercept.readthedocs.io/en/latest/migrating.html) ([MIGRATING.md](MIGRATING.md)) covers every breaking change. If you hit an incompatibility it doesn't cover, please [open an issue](https://github.com/Polandia94/aiointercept/issues).
