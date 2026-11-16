@@ -2331,6 +2331,115 @@ async def test_passthrough_proxied_redirect_not_followed_when_disabled(real_upst
         assert resp.headers["Location"].endswith("/status/200")
 
 
+async def _start_chunked_upstream(release: asyncio.Event, *, abort: bool = False) -> TestServer:
+    """Upstream whose ``/stream`` sends a first chunk, then waits for *release*
+    before finishing the body (or, with *abort*, dropping the connection)."""
+
+    async def stream(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        await resp.prepare(request)
+        await resp.write(b"first")
+        await release.wait()
+        if abort:
+            assert request.transport is not None
+            request.transport.close()
+            return resp
+        await resp.write(b"second")
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_get("/stream", stream)
+    server = TestServer(app)
+    await server.start_server()
+    return server
+
+
+async def test_passthrough_proxied_response_is_streamed():
+    """A proxied response reaches the client chunk by chunk, as the upstream
+    sends it, instead of only once the whole upstream body has been read."""
+    release = asyncio.Event()
+    upstream = await _start_chunked_upstream(release)
+    try:
+        async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+            m.get(re.compile(r"^http://never\.test/$"))
+            try:
+                resp = await asyncio.wait_for(session.get(f"{upstream_base(upstream)}/stream"), timeout=5)
+                assert resp.status == 200
+                assert await asyncio.wait_for(resp.content.readany(), timeout=5) == b"first"
+                release.set()
+                assert await asyncio.wait_for(resp.read(), timeout=5) == b"second"
+            finally:
+                release.set()
+    finally:
+        await upstream.close()
+
+
+async def test_passthrough_proxied_upstream_failure_mid_stream_drops_client(caplog):
+    """If the upstream dies after the headers were relayed, the client sees a
+    broken body instead of a cleanly ended, silently truncated one."""
+    release = asyncio.Event()
+    upstream = await _start_chunked_upstream(release, abort=True)
+    url = f"{upstream_base(upstream)}/stream"
+    caplog.set_level("WARNING")
+    try:
+        async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+            m.get(re.compile(r"^http://never\.test/$"))
+            try:
+                resp = await asyncio.wait_for(session.get(url), timeout=5)
+                assert resp.status == 200
+                assert await asyncio.wait_for(resp.content.readany(), timeout=5) == b"first"
+                release.set()
+                with pytest.raises(aiohttp.ClientPayloadError):
+                    await asyncio.wait_for(resp.read(), timeout=5)
+            finally:
+                release.set()
+    finally:
+        await upstream.close()
+    messages = [r.message for r in caplog.records if r.name == "aiointercept.core"]
+    assert len(messages) == 1
+    assert url in messages[0]
+
+
+async def test_passthrough_proxied_client_disconnect_mid_stream(caplog):
+    """A client that goes away mid-stream does not wedge the proxy or log an
+    upstream failure: the next proxied request is still served in full."""
+    release = asyncio.Event()
+    upstream = await _start_chunked_upstream(release)
+    url = f"{upstream_base(upstream)}/stream"
+    caplog.set_level("WARNING")
+    try:
+        async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+            m.get(re.compile(r"^http://never\.test/$"))
+            try:
+                resp = await asyncio.wait_for(session.get(url), timeout=5)
+                assert await asyncio.wait_for(resp.content.readany(), timeout=5) == b"first"
+                resp.close()
+                release.set()
+                again = await asyncio.wait_for(session.get(url), timeout=5)
+                assert await asyncio.wait_for(again.read(), timeout=5) == b"firstsecond"
+            finally:
+                release.set()
+    finally:
+        await upstream.close()
+    assert not [r for r in caplog.records if r.name == "aiointercept.core"]
+
+
+@pytest.mark.parametrize(("method", "code"), [("HEAD", 200), ("GET", 204), ("GET", 304)])
+async def test_passthrough_proxied_bodyless_response(real_upstream: TestServer, method: str, code: int):
+    """HEAD, 204 and 304 responses are relayed without a body (and without
+    chunked framing), and the connection stays usable afterwards."""
+    base = upstream_base(real_upstream)
+    async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.request(method, f"{base}/status/{code}")
+        assert resp.status == code
+        assert "Transfer-Encoding" not in resp.headers
+        assert await resp.read() == b""
+        follow = await session.get(f"{base}/status/200")
+        assert await follow.text() == "upstream"
+
+
 async def test_bypass_session_does_not_accumulate_cookies(real_upstream: TestServer):
     """The proxy must not replay cookies set by one upstream response onto
     later proxied requests — cookie state belongs to the test's own client."""

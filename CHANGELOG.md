@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Passthrough responses (`passthrough_unmatched=True`) are now streamed to the client as the upstream sends them instead of being buffered in full, so server-sent events, long polling and large downloads work; an upstream failure after the headers were relayed surfaces as `ClientPayloadError`.
 - A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
 
 ### Fixed
