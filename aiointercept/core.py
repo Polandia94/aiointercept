@@ -434,6 +434,7 @@ class aiointercept:  # noqa: N801
         passthrough: Sequence[str] | None = None,
         passthrough_unmatched: bool = False,
         param: str | None = None,
+        server_ssl: "SSLContext | None" = None,
         **kwargs: Any,
     ) -> None:
         """Create a mock.
@@ -462,6 +463,10 @@ class aiointercept:  # noqa: N801
             param: Keyword-argument name under which the mock is injected when
                 the instance is used as a decorator. Defaults to appending it as
                 the last positional argument.
+            server_ssl: Server-side :class:`ssl.SSLContext`. When given, the mock
+                test server serves real TLS and :attr:`server_url` starts with
+                ``https://``. Clients must trust the certificate. Only supported
+                with ``mock_external_urls=False``.
         """
         if kwargs:
             warnings.warn(
@@ -477,6 +482,13 @@ class aiointercept:  # noqa: N801
         if passthrough and not mock_external_urls:
             raise ValueError("passthrough requires mock_external_urls=True")
 
+        if server_ssl is not None and mock_external_urls:
+            raise ValueError(
+                "server_ssl is only supported with mock_external_urls=False: "
+                "with interception enabled, requests are redirected to the mock server as plaintext"
+            )
+
+        self._server_ssl = server_ssl
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
         self._mock_external_urls = mock_external_urls
@@ -540,7 +552,8 @@ class aiointercept:  # noqa: N801
     @property
     def server_url(self) -> str:
         """Base URL of the running test server. Raises ``RuntimeError`` before the first start."""
-        return f"http://{self.server_host}:{self.server_port}"
+        scheme = "https" if self._server_ssl is not None else "http"
+        return f"{scheme}://{self.server_host}:{self.server_port}"
 
     async def start(self) -> None:
         """Start the test server and install patches (if any).
@@ -613,7 +626,7 @@ class aiointercept:  # noqa: N801
                 app = web.Application(client_max_size=0)
                 app.router.add_route("*", "/{tail:.*}", self._dispatch)
                 self.server = TestServer(app)
-                await self.server.start_server()
+                await self.server.start_server(ssl=self._server_ssl)
 
             try:
                 loop.run_until_complete(_start_server())
