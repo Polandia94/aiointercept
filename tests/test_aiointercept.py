@@ -1745,6 +1745,24 @@ async def test_assert_called_with_strict_headers_duplicate_values():
             assert "orig-scheme" not in details.lower()
 
 
+async def test_assert_called_with_strict_headers_duplicate_custom_header():
+    url = "https://example.com/strict-dup-custom"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(url)
+        await session.get(
+            url,
+            headers=CIMultiDict([("X-Dup", "1"), ("X-Dup", "2")]),
+            skip_auto_headers=["User-Agent", "Accept", "Accept-Encoding"],
+        )
+        expected = CIMultiDict([("x-dup", "1"), ("X-DUP", "2"), ("host", "example.com")])
+        m.assert_called_with(url, headers=expected, strict_headers=True)
+
+        for dups in ([("X-Dup", "1, 2")], [("X-Dup", "1")], [("X-Dup", "2")]):
+            expected = CIMultiDict([("Host", "example.com"), *dups])
+            with pytest.raises(AssertionError):
+                m.assert_called_with(url, headers=expected, strict_headers=True)
+
+
 # ---------------------------------------------------------------------------
 # assert_called_with extra kwargs deprecation warning
 # ---------------------------------------------------------------------------
@@ -1827,7 +1845,7 @@ async def test_add_content_type_argument_wins_over_header():
         m.get("http://ct.test/", body="x", headers=headers, content_type="text/html; charset=utf-8")
         async with session.get("http://ct.test/") as resp:
             assert resp.status == 200
-            assert resp.headers.getall("Content-Type") == ["text/html; charset=utf-8"]
+            assert list(resp.headers.getall("Content-Type")) == ["text/html; charset=utf-8"]
             assert resp.headers["X-Extra"] == "1"
     assert headers == {"content-type": "text/plain", "X-Extra": "1"}
 
@@ -2336,16 +2354,53 @@ async def test_passthrough_proxied_repeated_response_headers_preserved(real_upst
     ):
         m.get(re.compile(r"^http://never\.test/$"))
         resp = await session.get(f"{base}/two-cookies")
-        assert resp.headers.getall("Set-Cookie") == ["a=1; Path=/", "b=2; Path=/"]
+        cookies = [v for k, v in resp.raw_headers if k.lower() == b"set-cookie"]
+        assert cookies == [b"a=1; Path=/", b"b=2; Path=/", b"c=3; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/"]
 
 
 async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
-    """Regression: repeated client request headers must all reach the upstream."""
+    """Regression: repeated client request headers must reach the upstream as separate lines.
+
+    The upstream echoes the raw X-Dup lines, so a folded ``"1, 2"`` would fail.
+    """
     base = upstream_base(real_upstream)
     async with ClientSession() as session, aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m:
         m.get(re.compile(r"^http://never\.test/$"))
         resp = await session.get(f"{base}/echo-dup", headers=CIMultiDict([("X-Dup", "1"), ("X-Dup", "2")]))
         assert await resp.json() == ["1", "2"]
+
+
+async def test_passthrough_proxied_repeated_cookie_request_headers_preserved(real_upstream: TestServer):
+    """Two Cookie request headers reach the upstream exactly as the client sends them without the mock.
+
+    aiohttp's client sends repeated Cookie headers as separate lines (checked
+    directly against the upstream first), so the proxy must not merge them.
+    """
+    url = f"{upstream_base(real_upstream)}/echo-cookie-lines"
+    headers = CIMultiDict([("Cookie", "a=1"), ("Cookie", "b=2")])
+    async with ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+        direct = await (await session.get(url, headers=headers)).json()
+    async with (
+        ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        m.get(re.compile(r"^http://never\.test/$"))
+        proxied = await (await session.get(url, headers=headers)).json()
+    assert direct == ["a=1", "b=2"]
+    assert proxied == direct
+
+
+async def test_passthrough_proxied_repeated_link_response_headers_preserved(real_upstream: TestServer):
+    """Repeated non-cookie upstream headers (Link) reach the client as separate lines."""
+    base = upstream_base(real_upstream)
+    async with (
+        ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session,
+        aiointercept(mock_external_urls=True, passthrough_unmatched=True) as m,
+    ):
+        m.get(re.compile(r"^http://never\.test/$"))
+        resp = await session.get(f"{base}/two-links")
+        links = [v for k, v in resp.raw_headers if k.lower() == b"link"]
+        assert links == [b'<https://a.test/>; rel="next"', b'<https://b.test/>; rel="prev"']
 
 
 # ---------------------------------------------------------------------------

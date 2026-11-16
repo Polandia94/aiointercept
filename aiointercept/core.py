@@ -23,7 +23,7 @@ from aiohttp.abc import ResolveResult
 from aiohttp.connector import SSLContext, TCPConnector
 from aiohttp.helpers import is_ip_address
 from aiohttp.test_utils import TestServer
-from multidict import CIMultiDict
+from multidict import CIMultiDict, MultiMapping
 from yarl import URL
 
 from .compat import merge_params, normalize_host, normalize_url
@@ -86,6 +86,27 @@ def _mismatch(label: str, expected: Any, actual: Any) -> AssertionError:
     error = AssertionError(summary)
     error.add_note(body)
     return error
+
+
+def _header_pairs(obj: Any) -> list[tuple[str, str]]:
+    """Return every header as a ``(name, value)`` pair, repeated headers kept apart.
+
+    On aiohttp 3, ``.headers`` is a ``MultiMapping`` that already keeps repeated
+    headers separate. aiohttp 4 folds repeated headers into one comma-joined
+    entry in ``.headers``, and ``raw_headers`` is the only public source that
+    keeps them apart; it is decoded like aiohttp's own parser does (utf-8 with
+    surrogateescape).
+    """
+    headers = obj.headers
+    if isinstance(headers, MultiMapping):
+        return list(headers.items())
+    return [
+        (
+            k.decode("utf-8", "surrogateescape") if isinstance(k, bytes) else k,
+            v.decode("utf-8", "surrogateescape") if isinstance(v, bytes) else v,
+        )
+        for k, v in obj.raw_headers
+    ]
 
 
 class AiointerceptRequestKwargs(TypedDict):
@@ -801,7 +822,7 @@ class aiointercept:  # noqa: N801
                         method=request.method,
                         url=real_url,
                         headers=CIMultiDict(
-                            (k, v) for k, v in request.headers.items() if k.lower() not in _PROXY_REQ_DROP
+                            (k, v) for k, v in _header_pairs(request) if k.lower() not in _PROXY_REQ_DROP
                         ),
                         data=getattr(request, "captured_body", None) or None,
                         # Relay redirects untouched so the *client's* redirect
@@ -813,7 +834,7 @@ class aiointercept:  # noqa: N801
                         body = await real_resp.read()
                         status = real_resp.status
                         resp_headers = CIMultiDict(
-                            (k, v) for k, v in real_resp.headers.items() if k.lower() not in _PROXY_RESP_DROP
+                            (k, v) for k, v in _header_pairs(real_resp) if k.lower() not in _PROXY_RESP_DROP
                         )
                 except _SelfProxyError:
                     warning_msg = (
@@ -1182,7 +1203,7 @@ class aiointercept:  # noqa: N801
                 if actual_body != expected_body:
                     raise _mismatch("Body mismatch", expected_body, actual_body)
         if strict_headers and headers is not mock.ANY:
-            actual_headers = CIMultiDict(request.headers)
+            actual_headers = CIMultiDict(_header_pairs(request))
             actual_headers.popall("X-Aiointercept-Orig-Scheme", None)
             expected_headers = CIMultiDict(headers or {})
             actual_values = {k: actual_headers.getall(k) for k in {name.lower() for name in actual_headers}}

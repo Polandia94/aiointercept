@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Repeated request and response headers are no longer folded into one on aiohttp 4 (aiohttp master): `strict_headers` checks in `assert_called_with` see each repeated header, and passthrough proxying keeps repeated headers such as `Set-Cookie` separate.
 - Passthrough hosts keep passing through when a regex handler is registered.
 - `passthrough` accepts hosts without ports (matching every port on that host); entries containing ports, URLs, and invalid entries, or `passthrough` without `mock_external_urls=True`, now raise `ValueError`.
 - Callbacks that return `None` now serve the registered response, async callable objects are awaited as async callbacks, and other invalid return values fail with a clear error.
