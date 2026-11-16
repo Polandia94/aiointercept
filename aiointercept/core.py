@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 _MAX_DIFF_LINE_LEN = 200
 _MAX_DIFF_LINES = 60
 
+# Grace period (seconds) for handlers still running when ``stop()`` is called, e.g. an open
+# streaming response. aiohttp applies it twice (wait, cancel, wait again), so ``stop()`` is
+# bounded by about twice this value instead of the runner's 60 s default.
+_SHUTDOWN_TIMEOUT = 0.5
+
 
 def _pformat(value: Any) -> list[str]:
     """Pretty-print *value* into a list of lines for diffing.
@@ -626,7 +631,7 @@ class aiointercept:  # noqa: N801
                 app = web.Application(client_max_size=0)
                 app.router.add_route("*", "/{tail:.*}", self._dispatch)
                 self.server = TestServer(app)
-                await self.server.start_server(ssl=self._server_ssl)
+                await self.server.start_server(ssl=self._server_ssl, shutdown_timeout=_SHUTDOWN_TIMEOUT)
 
             try:
                 loop.run_until_complete(_start_server())
