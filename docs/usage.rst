@@ -453,6 +453,14 @@ Constructor parameters
      - ``False``
      - Proxy all unmatched requests to the real network. Requires
        ``mock_external_urls=True``.
+   * - ``passthrough_ssl``
+     - ``ssl.SSLContext | None``
+     - ``None``
+     - Client-side TLS context for the upstream requests proxied by
+       ``passthrough_unmatched`` (for a private CA or client certificate).
+       Default is normal certificate verification. Does not apply to hosts in
+       ``passthrough``, which connect directly with the client's own TLS
+       settings. Requires ``passthrough_unmatched=True``.
    * - ``param``
      - ``str | None``
      - ``None``
