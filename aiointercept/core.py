@@ -680,14 +680,16 @@ class aiointercept:  # noqa: N801
         timed_out = False
         try:
             if server_loop is not None and server_loop.is_running():
+                # Capture what to close now: a teardown that outlives the timeout must not
+                # close or clear the session/server of a later start() on this instance.
+                bypass_session = self._bypass_session
+                server = self.server
 
                 async def _teardown() -> None:
-                    if self._bypass_session is not None:
-                        await self._bypass_session.close()
-                        self._bypass_session = None
-                    if self.server is not None:
-                        await self.server.close()
-                        self.server = None
+                    if bypass_session is not None:
+                        await bypass_session.close()
+                    if server is not None:
+                        await server.close()
 
                 fut = asyncio.run_coroutine_threadsafe(_teardown(), server_loop)
                 try:
