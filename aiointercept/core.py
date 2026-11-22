@@ -6,6 +6,7 @@ import logging
 import pprint
 import socket
 import threading
+import time
 import typing
 import warnings
 import weakref
@@ -158,6 +159,11 @@ class AiointerceptRequest(web.Request):
 
 
 logger = logging.getLogger(__name__)
+
+# Must exceed aiohttp's default 60 s graceful-shutdown wait (AppRunner(shutdown_timeout=60.0),
+# honoured by TestServer.close() while in-flight handlers finish), so any shutdown that
+# completes today still completes; only real hangs fail.
+_SERVER_STOP_TIMEOUT = 90.0
 
 _PROXY_REQ_DROP = frozenset(("host", "transfer-encoding", "x-aiointercept-orig-scheme"))
 # content-length must be dropped along with content-encoding: the proxy reads
@@ -582,7 +588,8 @@ class aiointercept:  # noqa: N801
                 _install_patches(self)
         except BaseException:
             _remove_patches(self)
-            await self._stop_server_thread()
+            with suppress(RuntimeError):
+                await self._stop_server_thread()
             raise
 
     async def __aexit__(
@@ -604,12 +611,14 @@ class aiointercept:  # noqa: N801
             if self._mock_external_urls:
                 _remove_patches(self)
         finally:
-            await self._stop_server_thread()
-            self._caller_loop = None
-            self.handlers.clear()
-            self.patterns_handler.clear()
-            self._host_list.clear()
-            self._patterns_list.clear()
+            try:
+                await self._stop_server_thread()
+            finally:
+                self._caller_loop = None
+                self.handlers.clear()
+                self.patterns_handler.clear()
+                self._host_list.clear()
+                self._patterns_list.clear()
 
     async def _start_server_thread(self) -> None:
         ready = threading.Event()
@@ -666,27 +675,42 @@ class aiointercept:  # noqa: N801
 
     async def _stop_server_thread(self) -> None:
         server_loop = self._server_loop
-        if server_loop is not None and server_loop.is_running():
+        thread = self._server_thread
+        deadline = time.monotonic() + _SERVER_STOP_TIMEOUT
+        timed_out = False
+        try:
+            if server_loop is not None and server_loop.is_running():
 
-            async def _teardown() -> None:
-                if self._bypass_session is not None:
-                    await self._bypass_session.close()
-                    self._bypass_session = None
-                if self.server is not None:
-                    await self.server.close()
-                    self.server = None
+                async def _teardown() -> None:
+                    if self._bypass_session is not None:
+                        await self._bypass_session.close()
+                        self._bypass_session = None
+                    if self.server is not None:
+                        await self.server.close()
+                        self.server = None
 
-            try:
-                await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_teardown(), server_loop))
-            finally:
-                server_loop.call_soon_threadsafe(server_loop.stop)
+                fut = asyncio.run_coroutine_threadsafe(_teardown(), server_loop)
+                try:
+                    await asyncio.wait_for(asyncio.wrap_future(fut), max(deadline - time.monotonic(), 0))
+                except TimeoutError:
+                    timed_out = True
+                    fut.cancel()
+                finally:
+                    server_loop.call_soon_threadsafe(server_loop.stop)
 
-        if self._server_thread is not None:
-            self._server_thread.join()
+            if thread is not None:
+                await asyncio.to_thread(thread.join, max(deadline - time.monotonic(), 0))
+        finally:
             self._server_thread = None
-        self._server_loop = None
-        self._bypass_session = None
-        self.server = None
+            self._server_loop = None
+            self._bypass_session = None
+            self.server = None
+
+        if timed_out or (thread is not None and thread.is_alive()):
+            raise RuntimeError(
+                f"aiointercept server thread did not stop within {_SERVER_STOP_TIMEOUT} seconds; "
+                "a handler or callback is probably blocking the server loop"
+            )
 
     # Decorator support
     def __call__(self, f: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
