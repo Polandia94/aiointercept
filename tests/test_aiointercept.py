@@ -2248,6 +2248,42 @@ async def test_pending_tasks_cancelled_on_shutdown():
             assert resp.status == 200
 
 
+@pytest.mark.parametrize("mock_external_urls", [False, True])
+async def test_stop_times_out_when_server_loop_is_wedged(monkeypatch, mock_external_urls):
+    """stop() raises instead of hanging forever when the server loop is blocked, and still cleans up."""
+    from aiointercept import core as ai_core
+
+    monkeypatch.setattr(ai_core, "_SERVER_STOP_TIMEOUT", 0.5, raising=False)
+    originals = (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get)
+    release = threading.Event()
+    # Safety net: before the fix stop() blocks forever; release the loop after a few
+    # seconds so the red test fails ("DID NOT RAISE") instead of stalling CI.
+    safety = threading.Timer(5, release.set)
+    safety.start()
+    m = aiointercept(mock_external_urls=mock_external_urls)
+    await m.start()
+    m.get("http://wedged.test/", status=200)
+    thread = m._server_thread
+    server = m.server
+    m._server_loop.call_soon_threadsafe(release.wait)  # blocks the server loop thread
+    try:
+        with pytest.raises(RuntimeError, match="did not stop"):
+            await m.stop()
+        # State is reset so the instance is reusable, and patches are gone.
+        assert m._server_thread is None
+        assert m._server_loop is None
+        assert m.server is None
+        assert m.handlers == {}
+        assert (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get) == originals
+    finally:
+        release.set()
+        safety.cancel()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    # The teardown still ran once the loop unblocked: the listening socket is not leaked.
+    assert server.closed
+
+
 async def test_server_thread_startup_failure_propagates():
     """A failure in TestServer.start_server is captured in the worker thread and re-raised."""
     from unittest.mock import patch

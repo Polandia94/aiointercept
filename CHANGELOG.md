@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `passthrough_unmatched=True`, an unmatched request aimed at the mock server itself (e.g. `m.server_url`) no longer loops back into the mock and hangs the client; it fails with `ClientConnectionError` like any other unmatched request.
 - The original request scheme is tracked per connection instead of per host: HTTPS requests on kept-alive connections are no longer proxied upstream as cleartext HTTP with `passthrough_unmatched=True`, `http://` and `https://` handlers on the same host (including http to https redirects) both work, and HTTPS on non-default ports survives `clear()` on kept-alive connections.
 - A `repeat=True` registration made after finite responses for the same URL or pattern no longer discards them; they are served first, then the repeating response.
+- `stop()` (and leaving `async with`) no longer hangs forever when the mock server's loop is blocked, for example by a callback that never returns; after 90 seconds it raises `RuntimeError` and resets the instance so it can be started again.
 - Passthrough upstream failures surface as `ClientConnectionError` on the client instead of an HTTP 500.
 - The passthrough proxy preserves repeated request and response headers (e.g. multiple `Set-Cookie`).
 - A request whose upload is aborted by the client no longer leaves an empty entry in `m.requests`.
