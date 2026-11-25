@@ -668,7 +668,8 @@ class aiointercept:  # noqa: N801
 
     async def _stop_server_thread(self) -> None:
         server_loop = self._server_loop
-        if server_loop is not None:
+        # A closed loop (the server thread died) can take no more callbacks; just join.
+        if server_loop is not None and not server_loop.is_closed():
 
             async def _teardown() -> None:
                 if self._bypass_session is not None:

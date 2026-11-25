@@ -2282,12 +2282,26 @@ async def test_stop_right_after_start_does_not_hang(monkeypatch):
         loop = real_new_event_loop()
         if threading.current_thread().name == "aiointercept-server":
             real_run_forever = loop.run_forever
+            real_run_until_complete = loop.run_until_complete
+            in_run_until_complete = False
 
             def slow_run_forever():
-                time.sleep(0.5)
+                # run_until_complete calls run_forever internally; only delay the
+                # top-level call that serves requests, not the startup.
+                if not in_run_until_complete:
+                    time.sleep(0.5)
                 real_run_forever()
 
+            def tracked_run_until_complete(future):
+                nonlocal in_run_until_complete
+                in_run_until_complete = True
+                try:
+                    return real_run_until_complete(future)
+                finally:
+                    in_run_until_complete = False
+
             loop.run_forever = slow_run_forever
+            loop.run_until_complete = tracked_run_until_complete
         return loop
 
     monkeypatch.setattr(asyncio, "new_event_loop", slow_new_event_loop)
