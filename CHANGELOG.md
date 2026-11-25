@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
 - Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
+- The undocumented `handlers` and `patterns_handler` attributes now always map to a list of responses: a `repeat=True` registration is stored as a one-item list instead of a bare response object.
 
 ### Fixed
 
