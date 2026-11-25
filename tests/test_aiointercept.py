@@ -2492,10 +2492,9 @@ async def test_stop_right_after_start_does_not_hang(monkeypatch):
 
 async def test_aenter_failure_after_server_start_cleans_up():
     """If __aenter__ fails after the server starts, the server thread is stopped
-    and the class-level patches are rolled back (no leaked refcount/state)."""
+    and the class-level patches are rolled back (no leaked state)."""
     from aiointercept import core as ai_core
 
-    refcount_before = ai_core._patch_refcount
     resolve_host_before = TCPConnector._resolve_host
 
     m = aiointercept(mock_external_urls=True)
@@ -2510,7 +2509,6 @@ async def test_aenter_failure_after_server_start_cleans_up():
     assert m._server_thread is None
     assert m._server_loop is None
     assert m not in ai_core._active_instances
-    assert ai_core._patch_refcount == refcount_before
     assert TCPConnector._resolve_host is resolve_host_before
 
 
