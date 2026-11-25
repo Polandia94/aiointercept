@@ -2534,7 +2534,59 @@ async def test_ordered_requests_second_element_is_request():
         await session.post(url, json={"x": 1})
 
     (_, req) = m.ordered_requests[0]
-    assert req.kwargs["json"] == {"x": 1}
+    assert await req.json() == {"x": 1}
+
+
+async def test_request_kwargs_is_deprecated():
+    """req.kwargs warns (it only exists for aioresponses parity) but keeps its contents."""
+    url = "http://kwargs.test/dep?a=1&a=2"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, json={"x": 1}, headers={"X-Test": "v"})
+
+    req = m.last_request
+    assert req is not None
+    with pytest.warns(DeprecationWarning, match="kwargs"):
+        kwargs = req.kwargs
+    assert kwargs["json"] == {"x": 1}
+    assert kwargs["query"] == {"a": ["1", "2"]}
+    assert kwargs["headers"]["X-Test"] == "v"
+    assert kwargs["data"] == b'{"x": 1}'
+
+
+async def test_callback_kwargs_do_not_warn():
+    """Callbacks keep receiving headers/query/json/data without a deprecation warning.
+
+    With warnings as errors, a warning inside the handler would turn into an HTTP 500.
+    """
+    url = "http://kwargs.test/cb"
+    seen: dict[str, Any] = {}
+
+    def cb(_url: URL, **kwargs: Any) -> CallbackResult:
+        seen.update(kwargs)
+        return CallbackResult(status=200)
+
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, callback=cb)
+        resp = await session.post(url, json={"x": 1})
+        assert resp.status == 200
+    assert seen["json"] == {"x": 1}
+    assert seen["data"] == b'{"x": 1}'
+
+
+async def test_native_accessors_replace_request_kwargs():
+    """The replacements documented for req.kwargs work after the mock has exited."""
+    url = "http://kwargs.test/native?a=1&a=2"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, json={"x": 1}, headers={"X-Test": "v"})
+
+    req = m.last_request
+    assert req is not None
+    assert req.headers["X-Test"] == "v"
+    assert req.query.getall("a") == ["1", "2"]
+    assert req.captured_body == b'{"x": 1}'
+    assert await req.json() == {"x": 1}
 
 
 async def test_ordered_requests_cleared_by_clear():

@@ -129,10 +129,12 @@ class AiointerceptRequest(web.Request):
     Attributes:
         captured_body: The raw request body as bytes, read before dispatch, or
             ``None`` when the request carried no body (e.g. a plain GET).
-        kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
-            key → list of values), ``data`` (raw body or ``None`` if no body),
-            and ``json`` (decoded body, or ``None``) — the keyword arguments
-            a callback receives.
+        kwargs: Deprecated, kept only for aioresponses parity. A mapping with the
+            parsed ``headers``, ``query`` (``dict`` of key → list of values),
+            ``data`` (raw body or ``None`` if no body), and ``json`` (decoded
+            body, or ``None``), the keyword arguments a callback receives. Use
+            :attr:`headers`, :attr:`query`, :attr:`captured_body` and
+            ``await request.json()`` instead.
         canonical_url: The normalized request URL with the original scheme
             restored (e.g. ``https://`` even though the test server received the
             request over plain HTTP). This is the URL passed to callbacks and
@@ -160,6 +162,16 @@ class AiointerceptRequest(web.Request):
 
     @property
     def kwargs(self) -> AiointerceptRequestKwargs:
+        warnings.warn(
+            "AiointerceptRequest.kwargs is deprecated and will be removed in a future release; "
+            "use request.headers, request.query, request.captured_body or await request.json().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._callback_kwargs
+
+    @property
+    def _callback_kwargs(self) -> AiointerceptRequestKwargs:
         return cast("_RequestData", self[_REQUEST_DATA_KEY]).kwargs
 
     @property
@@ -982,7 +994,7 @@ class aiointercept:  # noqa: N801
             _headers: Mapping[str, str] | None
             if callable(callback):
                 aiointercept_request = cast("AiointerceptRequest", request)
-                cb_kwargs = aiointercept_request.kwargs
+                cb_kwargs = aiointercept_request._callback_kwargs
                 # Use the canonical URL (normalized, original scheme restored)
                 # rather than request.url, which is always http:// here because
                 # the test server receives the request over plain HTTP.

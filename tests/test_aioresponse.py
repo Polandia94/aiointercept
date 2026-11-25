@@ -99,7 +99,8 @@ class AIOResponsesTestCase(AsyncTestCase):
         # Check that the headers from the ClientSession are within the request
         key = ("GET", URL(self.url))
         request = m.requests[key][0]
-        self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer foobar")
+        with self.assertWarns(DeprecationWarning):  # kwargs is deprecated, kept for parity
+            self.assertEqual(request.kwargs["headers"]["Authorization"], "Bearer foobar")
 
     @aiointercept(True)
     async def test_returned_response_headers(self, m):

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
 - Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
+### Deprecated
+
+- `AiointerceptRequest.kwargs` (on recorded requests such as `m.requests[key][-1]` or `m.last_request`) now emits a `DeprecationWarning`; it only exists for aioresponses parity. Use `request.headers`, `request.query`, `request.captured_body` and `await request.json()` instead. Callbacks keep receiving `headers`, `query`, `data` and `json` as keyword arguments, without a warning.
+
 ### Fixed
 
 - Mocked requests no longer fail with HTTP 500 under `python -X dev` (or `PYTHONASYNCIODEBUG=1`) when warnings are errors: `captured_body`, `kwargs` and `canonical_url` are now kept in the request's own storage instead of custom attributes, which aiohttp warns about in dev mode.

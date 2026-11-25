@@ -87,7 +87,7 @@ async def mock_http():
 - Callbacks only receive `headers`, `query`, `data`, and `json` (no client-side kwargs)
 - Exceptions raised inside a callback do not reach the code that made the request: the client gets an HTTP 500 response and the traceback is logged on the `aiohttp.server` logger (aioresponses propagates the exception). To make the client see a connection error, register `exception=True` instead
 - `passthrough` accepts hosts without ports, not URLs, and matches by host rather than URL prefix: without exact-URL registrations on that host, `passthrough=["api.example.com"]` lets every path and port on `api.example.com` through (aioresponses matches URL prefixes). An exact-URL registration takes precedence and causes the whole host to be intercepted; unmatched URLs then fail unless `passthrough_unmatched=True`
-- `request.kwargs` is a deprecated compatibility shim — read captured requests natively instead (see below)
+- `request.kwargs` is a deprecated compatibility shim that emits a `DeprecationWarning` — read captured requests natively instead (see below)
 - Bare IP addresses are not intercepted
 - `call_args_list` is not implemented; use `m.requests` (grouped by `(METHOD, URL)`) or `m.ordered_requests` (arrival order). `m.call_count` (all requests) and each registration's `call_count` are available
 - `timeout=` passthrough is not supported
@@ -141,7 +141,9 @@ sequence are affected.
 
 ## Reading captured requests
 
-`request.kwargs` is a compatibility shim slated for deprecation. Captured requests are real
+`request.kwargs` is a deprecated compatibility shim: reading it emits a `DeprecationWarning`,
+and it will be removed in a future release. Callbacks keep receiving `headers`, `query`,
+`data` and `json` as keyword arguments. Captured requests are real
 `aiohttp.web.Request` objects, so read them natively instead:
 
 | `kwargs` key | native accessor |
