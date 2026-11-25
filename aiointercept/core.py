@@ -507,10 +507,11 @@ class aiointercept:  # noqa: N801
         self._https_transports: weakref.WeakSet[asyncio.BaseTransport] = weakref.WeakSet()
         self._patterns_list: list[Pattern[str]] = []
 
-        # handler are (path, method) → handler or list of handlers (if repeat != True)
-        self.handlers: dict[tuple[str, str], MockResponse | list[MockResponse]] = {}
-        # patterns_handler are (pattern, method) → handler or list of handlers (if repeat != True)
-        self.patterns_handler: dict[tuple[Pattern[str], str], MockResponse | list[MockResponse]] = {}
+        # handlers are (path, method) → queue of responses; a repeat=True response
+        # is the last entry and is never popped.
+        self.handlers: dict[tuple[str, str], list[MockResponse]] = {}
+        # patterns_handler are (pattern, method) → queue of responses, same rules.
+        self.patterns_handler: dict[tuple[Pattern[str], str], list[MockResponse]] = {}
 
         # recorded requests: {(METHOD, URL): [web.Request, ...]}
         self.requests: dict[tuple[str, URL], list[AiointerceptRequest]] = {}
@@ -740,7 +741,7 @@ class aiointercept:  # noqa: N801
     def _diagnose_unmatched(self, method: str, url_str: str) -> str:
         request_line = f"{method} {url_str}"
         existing = self.handlers.get((url_str, method))
-        if isinstance(existing, list) and not existing:
+        if existing is not None and not existing:
             return (
                 f"aiointercept: no handler for {request_line} — "
                 "all registered handlers for this method+url have already been consumed "
@@ -792,16 +793,9 @@ class aiointercept:  # noqa: N801
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
         selected_handler = self.handlers.get((url_str, req_method))
-        if isinstance(selected_handler, list):
-            if not selected_handler:
-                handler: MockResponse | None = None
-            elif selected_handler[0]._repeat:
-                handler = selected_handler[0]
-            else:
-                handler = selected_handler.pop(0)
-
-        else:
-            handler = selected_handler
+        handler: MockResponse | None = None
+        if selected_handler:
+            handler = selected_handler[0] if selected_handler[0]._repeat else selected_handler.pop(0)
         original_host = request.headers.get("Host", request.url.host)
         if handler is None:
             original_urls = [
@@ -810,17 +804,14 @@ class aiointercept:  # noqa: N801
             ]
             for (pattern, method), pattern_handler in self.patterns_handler.items():
                 if any(pattern.match(u) for u in original_urls) and method == req_method:
-                    if isinstance(pattern_handler, list):
-                        handler = pattern_handler[0]
-                        remaining = pattern_handler[1:]
-                        if handler._repeat:
-                            pass  # repeating tail: keep serving it
-                        elif remaining:
-                            self.patterns_handler[pattern, req_method] = remaining
-                        else:
-                            del self.patterns_handler[pattern, req_method]
+                    handler = pattern_handler[0]
+                    remaining = pattern_handler[1:]
+                    if handler._repeat:
+                        pass  # repeating tail: keep serving it
+                    elif remaining:
+                        self.patterns_handler[pattern, req_method] = remaining
                     else:
-                        handler = pattern_handler
+                        del self.patterns_handler[pattern, req_method]
                     break
 
         if handler is None:
@@ -1029,7 +1020,7 @@ class aiointercept:  # noqa: N801
             mock_response._repeat = True
             handlers: list[MockResponse] = [mock_response]
         else:
-            if repeat is False or repeat == 0:
+            if repeat == 0:
                 repeat = 1
             if repeat < 1:
                 raise ValueError("repeat must be at least 1")
@@ -1037,26 +1028,26 @@ class aiointercept:  # noqa: N801
         if isinstance(url, Pattern):
             if (url, method) in self.patterns_handler:
                 list_pattern_handler = self.patterns_handler[(url, method)]
-                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                if not list_pattern_handler[-1]._repeat:
                     list_pattern_handler += handlers
                 else:
                     raise ValueError(
                         f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
                     )
             else:
-                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+                self.patterns_handler[url, method] = handlers
             return mock_response
         handler_url = str(normalize_url(url))
         if (handler_url, method) in self.handlers:
             handlers_list = self.handlers[(handler_url, method)]
-            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+            if not (handlers_list and handlers_list[-1]._repeat):
                 handlers_list += handlers
             else:
                 raise ValueError(
                     f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
                 )
         else:
-            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
+            self.handlers[handler_url, method] = handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
