@@ -380,12 +380,18 @@ All intercepted requests are stored in ``m.requests``, keyed by
     key = ("POST", URL("https://api.example.com/orders"))
     req = m.requests[key][-1]   # most recent request to this URL
 
-    req.captured_body            # raw bytes body
-    req.kwargs["json"]           # parsed JSON body (or None)
-    req.kwargs["query"]          # dict[str, list[str]] - preserves duplicate keys
-    req.kwargs["headers"]        # raw request headers (multidict)
+    req.captured_body            # raw bytes body (or None)
+    await req.json()             # parsed JSON body; works after the mock has exited
+    req.query.getall("a")        # every value of a repeated query key
+    req.headers                  # request headers (multidict)
+    req.canonical_url            # normalized URL with the original scheme
 
 URLs are normalized: fragments are stripped and query parameters are sorted.
+
+``req.kwargs`` (a dict with ``headers``, ``query``, ``data`` and ``json``) is
+deprecated: it only exists for parity with aioresponses and emits a
+``DeprecationWarning``. Callbacks keep receiving these values as keyword
+arguments.
 
 For cross-URL ordering, ``m.ordered_requests`` is a flat list of
 ``(key, request)`` tuples in the order they arrived:
@@ -394,7 +400,7 @@ For cross-URL ordering, ``m.ordered_requests`` is a flat list of
 
     # Iterate all requests in arrival order:
     for (method, url), req in m.ordered_requests:
-        print(method, url, req.kwargs["json"])
+        print(method, url, req.captured_body)
 
     # Quick helpers built on top of ordered_requests:
     m.call_count    # int — total requests across all URLs

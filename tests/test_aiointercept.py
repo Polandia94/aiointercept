@@ -2534,7 +2534,7 @@ async def test_ordered_requests_second_element_is_request():
         await session.post(url, json={"x": 1})
 
     (_, req) = m.ordered_requests[0]
-    assert req.kwargs["json"] == {"x": 1}
+    assert await req.json() == {"x": 1}
 
 
 async def test_request_kwargs_is_deprecated():
