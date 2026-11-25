@@ -117,6 +117,20 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest-cov>=7.1.0",
 ]
+mutation = [
+    "mutmut>=3.8,<4",
+    "pytest-timeout>=2.3",
+]
 benchmarks = [
     "aioresponses (>=0.7.6,<1.0.0)",
 ]
+
+[tool.mutmut]
+source_paths = ["aiointercept/"]
+# The pytest plugin is loaded through the pytest11 entry point, so it must
+# stay importable from mutants/ without being mutated.
+do_not_mutate = ["aiointercept/pytest_plugin.py", "aiointercept/__init__.py"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# --timeout: a mutant that blocks thread.join() uses no CPU, so mutmut's own
+# CPU-time limit never fires. Keep it above the 90 s server-stop timeout.
+pytest_add_cli_args = ["-m", "not network", "-p", "no:cacheprovider", "--timeout=120"]
