@@ -2953,3 +2953,26 @@ def test_server_ssl_with_mock_external_urls_raises() -> None:
 async def test_server_url_default_is_http() -> None:
     async with aiointercept() as m:
         assert m.server_url.startswith("http://")
+
+
+async def test_reregister_after_exhaustion_then_repeat_tail():
+    """A consumed URL can be registered again, finite then repeat=True, in order."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get("http://requeue.test/x", status=200)
+        assert (await session.get("http://requeue.test/x")).status == 200
+        m.get("http://requeue.test/x", status=201)
+        m.get("http://requeue.test/x", status=202, repeat=True)
+        statuses = [(await session.get("http://requeue.test/x")).status for _ in range(4)]
+    assert statuses == [201, 202, 202, 202]
+
+
+async def test_reregister_pattern_after_exhaustion_then_repeat_tail():
+    """A fully consumed pattern can be registered again, finite then repeat=True, in order."""
+    pattern = re.compile(r"http://requeue\.test/p/\d+")
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.add(pattern, method="GET", status=200)
+        assert (await session.get("http://requeue.test/p/1")).status == 200
+        m.add(pattern, method="GET", status=201)
+        m.add(pattern, method="GET", status=202, repeat=True)
+        statuses = [(await session.get("http://requeue.test/p/1")).status for _ in range(4)]
+    assert statuses == [201, 202, 202, 202]
