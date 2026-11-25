@@ -2389,7 +2389,7 @@ async def test_passthrough_forwards_request_body(
         m = aiointercept(mock_external_urls=True, passthrough_unmatched=True)
     else:
         m = aiointercept(mock_external_urls=True, passthrough=["localhost"])
-    async with ClientSession() as session, m:
+    async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session, m:
         if route == "passthrough_unmatched":
             m.get(f"{base}/never-called", status=200)  # claims the host so requests are proxied
         resp = await session.post(f"{base}/echo-body", **kwargs)
