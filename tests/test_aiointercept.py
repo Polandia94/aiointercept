@@ -1,6 +1,7 @@
 """Tests for aiointercept.core targeting ~100% coverage."""
 
 import asyncio
+import base64
 import concurrent.futures
 import functools
 import logging
@@ -10,6 +11,7 @@ import ssl
 import threading
 from io import BytesIO
 from random import uniform
+from typing import Any
 from unittest import mock
 
 import aiohttp
@@ -2357,6 +2359,45 @@ async def test_passthrough_proxied_repeated_response_headers_preserved(real_upst
         resp = await session.get(f"{base}/two-cookies")
         cookies = [v for k, v in resp.raw_headers if k.lower() == b"set-cookie"]
         assert cookies == [b"a=1; Path=/", b"b=2; Path=/", b"c=3; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/"]
+
+
+@pytest.mark.parametrize("route", ["passthrough_unmatched", "passthrough_host"])
+@pytest.mark.parametrize(
+    ("kwargs", "expected_body", "expected_content_type"),
+    [
+        pytest.param({"data": b"\x00raw\xffbytes"}, b"\x00raw\xffbytes", "application/octet-stream", id="raw-bytes"),
+        pytest.param({"data": {"a": "1"}}, b"a=1", "application/x-www-form-urlencoded", id="form"),
+        pytest.param({"json": {"k": [1, 2]}}, b'{"k": [1, 2]}', "application/json", id="json"),
+        pytest.param({}, b"", None, id="empty"),
+    ],
+)
+async def test_passthrough_forwards_request_body(
+    real_upstream: TestServer,
+    route: str,
+    kwargs: dict[str, Any],
+    expected_body: bytes,
+    expected_content_type: str | None,
+):
+    """The upstream must receive exactly the body (and Content-Type) the client sent.
+
+    ``passthrough_unmatched`` goes through ``_dispatch``'s proxy request;
+    ``passthrough=[host]`` resolves for real and connects directly, bypassing
+    ``_dispatch``, but must deliver the same bytes.
+    """
+    base = upstream_base(real_upstream)
+    if route == "passthrough_unmatched":
+        m = aiointercept(mock_external_urls=True, passthrough_unmatched=True)
+    else:
+        m = aiointercept(mock_external_urls=True, passthrough=["localhost"])
+    async with ClientSession() as session, m:
+        if route == "passthrough_unmatched":
+            m.get(f"{base}/never-called", status=200)  # claims the host so requests are proxied
+        resp = await session.post(f"{base}/echo-body", **kwargs)
+        assert resp.status == 200
+        echoed = await resp.json()
+        assert base64.b64decode(echoed["body"]) == expected_body
+        if expected_content_type is not None:  # an empty POST has no meaningful Content-Type
+            assert echoed["content_type"] == expected_content_type
 
 
 async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
