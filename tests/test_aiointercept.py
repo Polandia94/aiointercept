@@ -964,6 +964,68 @@ async def test_assert_called_once_with():
         m.assert_called_once_with(url)
 
 
+@pytest.mark.parametrize("method", ["get", "post", "put", "patch", "delete", "head", "options"])
+async def test_method_shortcuts_forward_kwargs(method):
+    """Every method shortcut forwards status, body and headers to add()."""
+    url = "http://example.com/shortcut"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        getattr(m, method)(url, status=418, body="teapot", headers={"X-Reply": "yes"})
+        async with session.request(method.upper(), url) as resp:
+            body = await resp.read()
+    assert resp.status == 418
+    assert resp.headers["X-Reply"] == "yes"
+    assert body == (b"" if method == "head" else b"teapot")
+
+
+async def test_assert_called_with_params_match_and_merge():
+    """assert_called_with() merges params into the URL query before lookup."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"http://example\.com/p.*"), status=200)
+        await session.get("http://example.com/p?a=1&b=2")
+        m.assert_called_with("http://example.com/p", params={"a": "1", "b": "2"})
+        m.assert_called_with("http://example.com/p?a=1", params={"b": "2"})
+
+
+async def test_assert_called_with_params_mismatch():
+    """assert_called_with() fails when params do not match the query actually sent."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"http://example\.com/p.*"), status=200)
+        await session.get("http://example.com/p?a=1")
+        with pytest.raises(AssertionError):
+            m.assert_called_with("http://example.com/p", params={"a": "2"})
+
+
+async def test_assert_called_once_with_forwards_arguments():
+    """assert_called_once_with() forwards params, json and headers, and fails on mismatches."""
+    url = "http://example.com/once?a=1"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(re.compile(r"http://example\.com/once.*"), status=200)
+        await session.post(url, json={"x": 1}, headers={"X-Custom": "yes"})
+        base = "http://example.com/once"
+        m.assert_called_once_with(base, "POST", params={"a": "1"}, json={"x": 1}, headers={"X-Custom": "yes"})
+        with pytest.raises(AssertionError):
+            m.assert_called_once_with(base, "POST", params={"a": "2"}, json={"x": 1})
+        with pytest.raises(AssertionError, match="JSON body mismatch"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, json={"x": 2})
+        with pytest.raises(AssertionError, match="X-Custom"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, headers={"X-Custom": "no"})
+        with pytest.raises(AssertionError, match="Headers mismatch"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, headers={"X-Custom": "yes"}, strict_headers=True)
+
+
+async def test_assert_called_once_with_forwards_data_and_kwargs():
+    """assert_called_once_with() forwards data and extra kwargs to assert_called_with()."""
+    url = "http://example.com/oncedata"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, data=b"raw")
+        m.assert_called_once_with(url, "POST", data=b"raw")
+        with pytest.raises(AssertionError, match="Body mismatch"):
+            m.assert_called_once_with(url, "POST", data=b"other")
+        with pytest.warns(DeprecationWarning, match="Passing extra parameters to assert_called_with"):
+            m.assert_called_once_with(url, "POST", unknown=1)
+
+
 async def test_assert_called_with_wrong_url():
     """assert_called_with() raises AssertionError when the URL does not match what was called."""
     url = "http://example.com/x"
