@@ -2278,6 +2278,62 @@ async def test_async_callback_runs_on_server_loop_when_caller_loop_unset():
             assert await resp.read() == b"server-loop"
 
 
+@pytest.mark.parametrize("caller_loop", [True, False], ids=["caller-loop", "server-loop"])
+async def test_async_callback_receives_url_and_kwargs(caller_loop):
+    """Async callbacks get the canonical URL and request kwargs on both loop paths."""
+    seen: list[tuple[Any, dict[str, Any]]] = []
+
+    async def cb(url, **kwargs):
+        seen.append((url, kwargs))
+        return CallbackResult(status=200, body=b"ok")
+
+    async with aiointercept(mock_external_urls=True) as m:
+        if not caller_loop:
+            m._caller_loop = None
+        m.post("http://cb-args.test/path?b=2&a=1", callback=cb)
+        async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            resp = await session.post("http://cb-args.test/path?b=2&a=1", json={"k": "v"}, headers={"X-Test": "yes"})
+            assert resp.status == 200
+
+    assert len(seen) == 1
+    url, kwargs = seen[0]
+    assert url == URL("http://cb-args.test/path?a=1&b=2")
+    assert set(kwargs) == {"headers", "query", "json", "data"}
+    assert kwargs["headers"]["X-Test"] == "yes"
+    assert kwargs["query"] == {"a": ["1"], "b": ["2"]}
+    assert kwargs["json"] == {"k": "v"}
+    assert kwargs["data"] == b'{"k": "v"}'
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    ("request_kwargs", "expected_data", "expected_json"),
+    [
+        pytest.param({"json": {"a": 1}}, b'{"a": 1}', {"a": 1}, id="json"),
+        pytest.param({"data": b"raw-bytes"}, b"raw-bytes", None, id="raw"),
+        pytest.param({"data": {"f": "1"}}, b"f=1", None, id="form"),
+    ],
+)
+async def test_callback_kwargs_data_is_request_body(is_async, request_kwargs, expected_data, expected_json):
+    """kwargs["data"] holds the raw request body for sync and async callbacks."""
+    seen: dict[str, Any] = {}
+
+    def sync_cb(url, **kwargs):
+        seen.update(kwargs)
+
+    async def async_cb(url, **kwargs):
+        seen.update(kwargs)
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.post("http://cb-data.test/", callback=async_cb if is_async else sync_cb)
+        async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            resp = await session.post("http://cb-data.test/", **request_kwargs)
+            assert resp.status == 200
+
+    assert seen["data"] == expected_data
+    assert seen["json"] == expected_json
+
+
 async def test_shared_resolve_host_no_active_instances_uses_real_resolution():
     """With patches installed but no active instances, _shared_resolve_host
     falls through to the real implementation."""
