@@ -2264,6 +2264,7 @@ async def test_stop_times_out_when_server_loop_is_wedged(monkeypatch, mock_exter
     await m.start()
     m.get("http://wedged.test/", status=200)
     thread = m._server_thread
+    server = m.server
     m._server_loop.call_soon_threadsafe(release.wait)  # blocks the server loop thread
     try:
         with pytest.raises(RuntimeError, match="did not stop"):
@@ -2279,6 +2280,8 @@ async def test_stop_times_out_when_server_loop_is_wedged(monkeypatch, mock_exter
         safety.cancel()
         thread.join(timeout=10)
     assert not thread.is_alive()
+    # The teardown still ran once the loop unblocked: the listening socket is not leaked.
+    assert server.closed
 
 
 async def test_server_thread_startup_failure_propagates():

@@ -691,14 +691,17 @@ class aiointercept:  # noqa: N801
                     if server is not None:
                         await server.close()
 
+                # The teardown is never cancelled and the loop stops only once it is done
+                # (and its result handed over): if the wait below times out, it still runs
+                # when the loop unblocks, so the server's listening socket is not leaked.
                 fut = asyncio.run_coroutine_threadsafe(_teardown(), server_loop)
+                fut.add_done_callback(lambda _: server_loop.call_soon_threadsafe(server_loop.stop))
                 try:
-                    await asyncio.wait_for(asyncio.wrap_future(fut), max(deadline - time.monotonic(), 0))
+                    await asyncio.wait_for(
+                        asyncio.shield(asyncio.wrap_future(fut)), max(deadline - time.monotonic(), 0)
+                    )
                 except TimeoutError:
                     timed_out = True
-                    fut.cancel()
-                finally:
-                    server_loop.call_soon_threadsafe(server_loop.stop)
 
             if thread is not None:
                 await asyncio.to_thread(thread.join, max(deadline - time.monotonic(), 0))
