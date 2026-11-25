@@ -744,9 +744,6 @@ class aiointercept:  # noqa: N801
         # proxied requests — cookie handling belongs to each test's own client.
         return aiohttp.ClientSession(connector=_BypassConnector(), cookie_jar=aiohttp.DummyCookieJar())
 
-    def _match_pattern(self, url: str) -> bool:
-        return any(p.match(url) for p in self._patterns_list)
-
     def _diagnose_unmatched(self, method: str, url_str: str) -> str:
         request_line = f"{method} {url_str}"
         existing = self.handlers.get((url_str, method))
