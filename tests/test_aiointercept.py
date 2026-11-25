@@ -2997,3 +2997,34 @@ def test_server_ssl_with_mock_external_urls_raises() -> None:
 async def test_server_url_default_is_http() -> None:
     async with aiointercept() as m:
         assert m.server_url.startswith("http://")
+
+
+@pytest.mark.parametrize("mock_external_urls", [False, True], ids=["server_url", "external_urls"])
+@pytest.mark.parametrize("scenario", ["exception_handler", "no_handler", "upstream_failure"])
+async def test_dropped_connection_sends_no_bytes_and_logs_502(scenario: str, mock_external_urls: bool, caplog):
+    """The 502 built when the connection is dropped never reaches the client: it
+    reads zero bytes. The status is only visible in the aiohttp.access log."""
+    if scenario == "upstream_failure" and not mock_external_urls:
+        pytest.skip("passthrough needs mock_external_urls=True")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level(logging.INFO, logger="aiohttp.access")
+    async with aiointercept(
+        mock_external_urls=mock_external_urls, passthrough_unmatched=scenario == "upstream_failure"
+    ) as m:
+        m.get("http://boom.test/boom", exception=True)
+        host, path = {
+            "exception_handler": ("boom.test", "/boom"),
+            "no_handler": ("boom.test", "/other"),
+            "upstream_failure": (f"localhost:{closed_port}", "/x"),
+        }[scenario]
+        reader, writer = await asyncio.open_connection("127.0.0.1", m.server_port)
+        writer.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+        assert await asyncio.wait_for(reader.read(), 5) == b""
+        writer.close()
+        for _ in range(100):
+            if " 502 " in caplog.text:
+                break
+            await asyncio.sleep(0.02)
+    assert f'"GET {path} HTTP/1.1" 502 ' in caplog.text

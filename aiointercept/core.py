@@ -358,6 +358,20 @@ class _CloseConnection:
 
 
 _CLOSE_CONNECTION = _CloseConnection()
+
+
+def _drop_connection(request: web.Request) -> web.Response:
+    """Close the client connection so the client raises ``ClientConnectionError``.
+
+    The returned response never reaches the client: the transport is already
+    closed, so aiohttp's writes are discarded and the client sees no bytes at all.
+    The 502 status is only visible in the server-side ``aiohttp.access`` log.
+    """
+    if request.transport:
+        request.transport.close()
+    return web.Response(status=502)
+
+
 handler_type = Callable[[web.Request], Awaitable[web.StreamResponse]] | _CloseConnection
 
 
@@ -379,9 +393,7 @@ class MockResponse:
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
         if self._handler is _CLOSE_CONNECTION:
-            if request.transport:
-                request.transport.close()
-            return web.Response(status=502, text="Handler registered to raise ClientConnectionError.")
+            return _drop_connection(request)
         fn = cast("Callable[[web.Request], Awaitable[web.StreamResponse]]", self._handler)
         return await fn(request)
 
@@ -859,19 +871,13 @@ class aiointercept:  # noqa: N801
                     # Upstream transport failure: surface it as a connection
                     # error on the client, like the unmatched path does.
                     logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
-                    if request.transport:
-                        request.transport.close()
-                    return web.Response(status=502, text="Upstream request failed.")
+                    return _drop_connection(request)
                 else:
                     return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
-            if request.transport:
-                request.transport.close()
-            # Fallback in case transport.close() didn't take effect — the client
-            # should normally see ClientConnectionError before reading this body.
-            return web.Response(status=502, text="No handler registered for this request.")
+            return _drop_connection(request)
         assert handler is not None
         return await handler(request)
 
