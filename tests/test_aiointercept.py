@@ -2956,6 +2956,48 @@ async def test_stop_is_bounded_while_response_is_in_flight():
     assert done, "stop() did not return within 10 s while a response was still open"
 
 
+async def _stop_while_slow_callback_runs(m: aiointercept) -> str:
+    """Start a request whose callback takes 2 s, call ``stop()`` mid-flight and
+    return the body the client received (or ``"error"`` if it got none)."""
+    started = asyncio.Event()
+
+    async def slow(url, **kwargs):
+        started.set()
+        await asyncio.sleep(2)
+        return CallbackResult(body="ok")
+
+    async def fetch() -> str:
+        # POST: aiohttp would retry an idempotent GET after the disconnect.
+        async with session.post(f"{m.server_url}/slow") as resp:
+            return await resp.text()
+
+    async with ClientSession() as session:
+        await m.start()
+        m.post(f"{m.server_url}/slow", callback=slow)
+        request = asyncio.ensure_future(fetch())
+        await started.wait()
+        await m.stop()
+        try:
+            return await request
+        except aiohttp.ClientError:
+            return "error"
+
+
+async def test_shutdown_timeout_default_cuts_off_slow_handler():
+    assert await _stop_while_slow_callback_runs(aiointercept()) == "error"
+
+
+async def test_shutdown_timeout_lets_slow_handler_finish():
+    m = aiointercept(shutdown_timeout=5)
+    assert await _stop_while_slow_callback_runs(m) == "ok"
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf")])
+def test_shutdown_timeout_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="shutdown_timeout"):
+        aiointercept(shutdown_timeout=value)
+
+
 # ---------------------------------------------------------------------------
 # Streaming request
 # ---------------------------------------------------------------------------
