@@ -174,7 +174,6 @@ class _SelfProxyError(Exception):
 # Module-level state for class-level patches shared across concurrent instances.
 # Only the first entering instance installs the patches; the last exiting one removes them.
 _patch_lock = threading.Lock()
-_patch_refcount: int = 0
 _real_ssl_context: Any = None
 _real_resolve_host: Any = None
 _real_get: Any = None
@@ -278,18 +277,18 @@ def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") ->
 def _install_patches(inst: "aiointercept") -> None:
     """Register ``inst`` and, on the first active instance, patch host
     resolution, SSL context, and connection reuse at the class level."""
-    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
+    global _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
+        first = not _active_instances
         _active_instances.append(inst)
         _refresh_snapshot()
-        if _patch_refcount == 0:
+        if first:
             _real_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
             _real_resolve_host = TCPConnector._resolve_host  # pyright: ignore[reportPrivateUsage]
             _real_get = TCPConnector._get  # pyright: ignore[reportPrivateUsage]
             TCPConnector._get_ssl_context = _shared_ssl_context  # type: ignore[assignment]
             TCPConnector._resolve_host = _shared_resolve_host  # type: ignore[assignment]
             TCPConnector._get = _shared_get  # type: ignore[assignment]
-        _patch_refcount += 1
 
 
 def _remove_patches(inst: "aiointercept") -> None:
@@ -297,14 +296,13 @@ def _remove_patches(inst: "aiointercept") -> None:
     the original host resolution, SSL context, and connection reuse. Idempotent:
     a no-op if ``inst`` was never registered (e.g. ``start()`` failed before
     patching)."""
-    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
+    global _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
         if inst not in _active_instances:
             return
         _active_instances.remove(inst)
         _refresh_snapshot()
-        _patch_refcount -= 1
-        if _patch_refcount == 0:
+        if not _active_instances:
             TCPConnector._get_ssl_context = _real_ssl_context  # type: ignore[method-assign]
             TCPConnector._resolve_host = _real_resolve_host  # type: ignore[method-assign]
             TCPConnector._get = _real_get  # type: ignore[method-assign]

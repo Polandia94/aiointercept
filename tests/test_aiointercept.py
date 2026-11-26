@@ -125,6 +125,52 @@ async def test_start_while_running_raises(mock_external_urls, second_entry):
     assert (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get) == originals
 
 
+def _patches_installed() -> bool:
+    """True if any of the class-level connector patches is currently active."""
+    from aiointercept import core as ai_core
+
+    return (
+        TCPConnector._resolve_host is ai_core._shared_resolve_host  # pyright: ignore[reportPrivateUsage]
+        or TCPConnector._get_ssl_context is ai_core._shared_ssl_context  # pyright: ignore[reportPrivateUsage]
+        or TCPConnector._get is ai_core._shared_get  # pyright: ignore[reportPrivateUsage]
+    )
+
+
+async def test_patches_removed_when_the_only_instance_stops():
+    """Unlike comparing against a value captured at test start (which is
+    vacuous if an earlier test leaked the patches), this checks the patches
+    really are gone after the last instance stops."""
+    assert not _patches_installed()
+    async with aiointercept(mock_external_urls=True):
+        assert _patches_installed()
+    assert not _patches_installed()
+
+
+@pytest.mark.parametrize("stop_first", ["first", "second"])
+async def test_overlapping_instances_share_patches_until_the_last_stops(stop_first):
+    """Patches stay installed while any instance is running and are removed
+    only when the last one stops, whichever order they stop in."""
+    first = aiointercept(mock_external_urls=True)
+    second = aiointercept(mock_external_urls=True)
+    await first.start()
+    await second.start()
+    try:
+        assert _patches_installed()
+        early, late = (first, second) if stop_first == "first" else (second, first)
+        await early.stop()
+        assert _patches_installed()
+        late.get("http://still-mocked.test/ping", status=200, body=b"pong")
+        async with ClientSession() as session:
+            resp = await session.get("http://still-mocked.test/ping")
+            assert await resp.read() == b"pong"
+        await late.stop()
+        assert not _patches_installed()
+    finally:
+        await first.stop()
+        await second.stop()
+    assert not _patches_installed()
+
+
 # ---------------------------------------------------------------------------
 # URL type variants: str, URL, Pattern
 # ---------------------------------------------------------------------------
@@ -2446,10 +2492,9 @@ async def test_stop_right_after_start_does_not_hang(monkeypatch):
 
 async def test_aenter_failure_after_server_start_cleans_up():
     """If __aenter__ fails after the server starts, the server thread is stopped
-    and the class-level patches are rolled back (no leaked refcount/state)."""
+    and the class-level patches are rolled back (no leaked state)."""
     from aiointercept import core as ai_core
 
-    refcount_before = ai_core._patch_refcount
     resolve_host_before = TCPConnector._resolve_host
 
     m = aiointercept(mock_external_urls=True)
@@ -2464,7 +2509,6 @@ async def test_aenter_failure_after_server_start_cleans_up():
     assert m._server_thread is None
     assert m._server_loop is None
     assert m not in ai_core._active_instances
-    assert ai_core._patch_refcount == refcount_before
     assert TCPConnector._resolve_host is resolve_host_before
 
 
