@@ -11,6 +11,7 @@ import warnings
 import weakref
 from collections.abc import AsyncIterable, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import wraps
 from re import Pattern
 from typing import TYPE_CHECKING, Any, Self, TypedDict, cast
@@ -130,17 +131,13 @@ class AiointerceptRequest(web.Request):
             ``None`` when the request carried no body (e.g. a plain GET).
         kwargs: A mapping with the parsed ``headers``, ``query`` (``dict`` of
             key → list of values), ``data`` (raw body or ``None`` if no body),
-            `and ``json`` (decoded body, or ``None``) — the keyword arguments
+            and ``json`` (decoded body, or ``None``) — the keyword arguments
             a callback receives.
         canonical_url: The normalized request URL with the original scheme
             restored (e.g. ``https://`` even though the test server received the
             request over plain HTTP). This is the URL passed to callbacks and
             used as the :attr:`aiointercept.requests` key.
     """
-
-    captured_body: bytes | None
-    kwargs: AiointerceptRequestKwargs
-    canonical_url: URL
 
     @classmethod
     def upgrade(
@@ -150,11 +147,35 @@ class AiointerceptRequest(web.Request):
         kwargs: "AiointerceptRequestKwargs",
         canonical_url: URL,
     ) -> Self:
-        request.__class__ = cls
-        request.captured_body = captured_body
-        request.kwargs = kwargs
-        request.canonical_url = canonical_url
+        # The data lives in the request's own mapping, aiohttp's supported place for
+        # per-request data: setting custom attributes warns in aiohttp's dev mode.
+        # The class swap goes through object.__setattr__ for the same reason.
+        request[_REQUEST_DATA_KEY] = _RequestData(captured_body, kwargs, canonical_url)
+        object.__setattr__(request, "__class__", cls)
         return cast("Self", request)
+
+    @property
+    def captured_body(self) -> bytes | None:
+        return cast("_RequestData", self[_REQUEST_DATA_KEY]).captured_body
+
+    @property
+    def kwargs(self) -> AiointerceptRequestKwargs:
+        return cast("_RequestData", self[_REQUEST_DATA_KEY]).kwargs
+
+    @property
+    def canonical_url(self) -> URL:
+        return cast("_RequestData", self[_REQUEST_DATA_KEY]).canonical_url
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestData:
+    captured_body: bytes | None
+    kwargs: AiointerceptRequestKwargs
+    canonical_url: URL
+
+
+# aiohttp >= 3.14 warns (NotAppKeyWarning) on plain string keys; 3.13 has no RequestKey.
+_REQUEST_DATA_KEY: Any = web.RequestKey("aiointercept", _RequestData) if hasattr(web, "RequestKey") else "aiointercept"
 
 
 logger = logging.getLogger(__name__)
@@ -847,7 +868,7 @@ class aiointercept:  # noqa: N801
                         headers=CIMultiDict(
                             (k, v) for k, v in _header_pairs(request) if k.lower() not in _PROXY_REQ_DROP
                         ),
-                        data=getattr(request, "captured_body", None) or None,
+                        data=captured_body or None,
                         # Relay redirects untouched so the *client's* redirect
                         # handling (allow_redirects, history) behaves as it would
                         # against the real network.
