@@ -2932,7 +2932,8 @@ async def test_streaming_response_body():
     assert b"".join(received) == b"".join(chunks)
 
 
-async def test_stop_is_bounded_while_response_is_in_flight():
+@pytest.mark.parametrize("kwargs", [{}, {"shutdown_timeout": 0}], ids=["default", "zero"])
+async def test_stop_is_bounded_while_response_is_in_flight(kwargs):
     """``stop()`` must not wait for a still-open endless streaming response."""
 
     async def forever():
@@ -2941,7 +2942,7 @@ async def test_stop_is_bounded_while_response_is_in_flight():
             await asyncio.sleep(0.05)
 
     session = ClientSession()
-    m = aiointercept()
+    m = aiointercept(**kwargs)
     await m.start()
     m.get(f"{m.server_url}/sse", body=forever(), content_type="text/event-stream")
     resp = await session.get(f"{m.server_url}/sse")
@@ -2983,16 +2984,18 @@ async def _stop_while_slow_callback_runs(m: aiointercept) -> str:
             return "error"
 
 
-async def test_shutdown_timeout_default_cuts_off_slow_handler():
-    assert await _stop_while_slow_callback_runs(aiointercept()) == "error"
+@pytest.mark.parametrize("kwargs", [{}, {"shutdown_timeout": 0}], ids=["default", "zero"])
+async def test_shutdown_timeout_cuts_off_slow_handler(kwargs):
+    assert await _stop_while_slow_callback_runs(aiointercept(**kwargs)) == "error"
 
 
-async def test_shutdown_timeout_lets_slow_handler_finish():
-    m = aiointercept(shutdown_timeout=5)
+@pytest.mark.parametrize("value", [5, None, float("inf")])
+async def test_shutdown_timeout_lets_slow_handler_finish(value):
+    m = aiointercept(shutdown_timeout=value)
     assert await _stop_while_slow_callback_runs(m) == "ok"
 
 
-@pytest.mark.parametrize("value", [-1, float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [-1, float("nan")])
 def test_shutdown_timeout_rejects_invalid_values(value):
     with pytest.raises(ValueError, match="shutdown_timeout"):
         aiointercept(shutdown_timeout=value)
