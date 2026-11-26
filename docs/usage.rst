@@ -152,6 +152,29 @@ session with ``aiohttp.TCPConnector(ssl=client_ctx)``.
     With interception enabled, HTTPS requests to intercepted hosts are still
     served by stripping TLS.
 
+Stopping with requests still in flight
+--------------------------------------
+
+When the mock stops (leaving ``async with`` or calling ``stop()``), handlers
+that are still running get ``shutdown_timeout`` seconds (default ``0.5``) to
+finish. Then they are cancelled and aiohttp waits the same time again, so
+stopping takes at most about twice ``shutdown_timeout``. A handler is still
+running when the client keeps its connection open, for example with an
+endless or unread streaming response, or while it waits on a slow callback.
+A client whose response is cut off this way gets a ``ClientConnectionError``.
+
+Raise ``shutdown_timeout`` if your code still has requests in flight when the
+mock stops and you need them to complete. The value is passed as is to
+aiohttp's ``AppRunner``:
+
+.. code-block:: python
+
+    async with aiointercept(shutdown_timeout=5) as m:
+        ...
+
+Async callbacks run on the test's event loop, so they run to the end even when
+their handler is cancelled; only the response to the client is lost.
+
 Registering mock responses
 --------------------------
 

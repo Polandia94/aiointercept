@@ -1,6 +1,7 @@
 """Shared pytest fixtures and helpers."""
 
 import asyncio
+import base64
 import functools
 import gzip
 import json
@@ -93,6 +94,15 @@ async def real_upstream() -> AsyncIterator[TestServer]:
         resp.headers.add("Link", '<https://b.test/>; rel="prev"')
         return resp
 
+    async def echo_body(request: web.Request) -> web.Response:
+        body = await request.read()
+        return web.json_response(
+            {
+                "body": base64.b64encode(body).decode(),
+                "content_type": request.headers.get("Content-Type"),
+            }
+        )
+
     app = web.Application()
     app.router.add_route("*", "/status/{code}", status)
     app.router.add_get("/gzip", gzipped)
@@ -102,6 +112,7 @@ async def real_upstream() -> AsyncIterator[TestServer]:
     app.router.add_get("/echo-dup", echo_dup)
     app.router.add_get("/echo-cookie-lines", echo_cookie_lines)
     app.router.add_get("/two-links", two_links)
+    app.router.add_post("/echo-body", echo_body)
     server = TestServer(app)
     await server.start_server()
     yield server

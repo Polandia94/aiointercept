@@ -1,6 +1,7 @@
 """Tests for aiointercept.core targeting ~100% coverage."""
 
 import asyncio
+import base64
 import concurrent.futures
 import functools
 import logging
@@ -8,8 +9,10 @@ import re
 import socket
 import ssl
 import threading
+import time
 from io import BytesIO
 from random import uniform
+from typing import Any
 from unittest import mock
 
 import aiohttp
@@ -120,6 +123,52 @@ async def test_start_while_running_raises(mock_external_urls, second_entry):
 
     assert _mock_server_threads() - threads_before == set()
     assert (TCPConnector._resolve_host, TCPConnector._get_ssl_context, TCPConnector._get) == originals
+
+
+def _patches_installed() -> bool:
+    """True if any of the class-level connector patches is currently active."""
+    from aiointercept import core as ai_core
+
+    return (
+        TCPConnector._resolve_host is ai_core._shared_resolve_host  # pyright: ignore[reportPrivateUsage]
+        or TCPConnector._get_ssl_context is ai_core._shared_ssl_context  # pyright: ignore[reportPrivateUsage]
+        or TCPConnector._get is ai_core._shared_get  # pyright: ignore[reportPrivateUsage]
+    )
+
+
+async def test_patches_removed_when_the_only_instance_stops():
+    """Unlike comparing against a value captured at test start (which is
+    vacuous if an earlier test leaked the patches), this checks the patches
+    really are gone after the last instance stops."""
+    assert not _patches_installed()
+    async with aiointercept(mock_external_urls=True):
+        assert _patches_installed()
+    assert not _patches_installed()
+
+
+@pytest.mark.parametrize("stop_first", ["first", "second"])
+async def test_overlapping_instances_share_patches_until_the_last_stops(stop_first):
+    """Patches stay installed while any instance is running and are removed
+    only when the last one stops, whichever order they stop in."""
+    first = aiointercept(mock_external_urls=True)
+    second = aiointercept(mock_external_urls=True)
+    await first.start()
+    await second.start()
+    try:
+        assert _patches_installed()
+        early, late = (first, second) if stop_first == "first" else (second, first)
+        await early.stop()
+        assert _patches_installed()
+        late.get("http://still-mocked.test/ping", status=200, body=b"pong")
+        async with ClientSession() as session:
+            resp = await session.get("http://still-mocked.test/ping")
+            assert await resp.read() == b"pong"
+        await late.stop()
+        assert not _patches_installed()
+    finally:
+        await first.stop()
+        await second.stop()
+    assert not _patches_installed()
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1008,68 @@ async def test_assert_called_once_with():
         m.get(url, status=200)
         await session.get(url)
         m.assert_called_once_with(url)
+
+
+@pytest.mark.parametrize("method", ["get", "post", "put", "patch", "delete", "head", "options"])
+async def test_method_shortcuts_forward_kwargs(method):
+    """Every method shortcut forwards status, body and headers to add()."""
+    url = "http://example.com/shortcut"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        getattr(m, method)(url, status=418, body="teapot", headers={"X-Reply": "yes"})
+        async with session.request(method.upper(), url) as resp:
+            body = await resp.read()
+    assert resp.status == 418
+    assert resp.headers["X-Reply"] == "yes"
+    assert body == (b"" if method == "head" else b"teapot")
+
+
+async def test_assert_called_with_params_match_and_merge():
+    """assert_called_with() merges params into the URL query before lookup."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"http://example\.com/p.*"), status=200)
+        await session.get("http://example.com/p?a=1&b=2")
+        m.assert_called_with("http://example.com/p", params={"a": "1", "b": "2"})
+        m.assert_called_with("http://example.com/p?a=1", params={"b": "2"})
+
+
+async def test_assert_called_with_params_mismatch():
+    """assert_called_with() fails when params do not match the query actually sent."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.get(re.compile(r"http://example\.com/p.*"), status=200)
+        await session.get("http://example.com/p?a=1")
+        with pytest.raises(AssertionError):
+            m.assert_called_with("http://example.com/p", params={"a": "2"})
+
+
+async def test_assert_called_once_with_forwards_arguments():
+    """assert_called_once_with() forwards params, json and headers, and fails on mismatches."""
+    url = "http://example.com/once?a=1"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(re.compile(r"http://example\.com/once.*"), status=200)
+        await session.post(url, json={"x": 1}, headers={"X-Custom": "yes"})
+        base = "http://example.com/once"
+        m.assert_called_once_with(base, "POST", params={"a": "1"}, json={"x": 1}, headers={"X-Custom": "yes"})
+        with pytest.raises(AssertionError):
+            m.assert_called_once_with(base, "POST", params={"a": "2"}, json={"x": 1})
+        with pytest.raises(AssertionError, match="JSON body mismatch"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, json={"x": 2})
+        with pytest.raises(AssertionError, match="X-Custom"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, headers={"X-Custom": "no"})
+        with pytest.raises(AssertionError, match="Headers mismatch"):
+            m.assert_called_once_with(base, "POST", params={"a": "1"}, headers={"X-Custom": "yes"}, strict_headers=True)
+
+
+async def test_assert_called_once_with_forwards_data_and_kwargs():
+    """assert_called_once_with() forwards data and extra kwargs to assert_called_with()."""
+    url = "http://example.com/oncedata"
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(url, status=200)
+        await session.post(url, data=b"raw")
+        m.assert_called_once_with(url, "POST", data=b"raw")
+        with pytest.raises(AssertionError, match="Body mismatch"):
+            m.assert_called_once_with(url, "POST", data=b"other")
+        with pytest.warns(DeprecationWarning, match="Passing extra parameters to assert_called_with"):
+            m.assert_called_once_with(url, "POST", unknown=1)
 
 
 async def test_assert_called_with_wrong_url():
@@ -2276,6 +2387,62 @@ async def test_async_callback_runs_on_server_loop_when_caller_loop_unset():
             assert await resp.read() == b"server-loop"
 
 
+@pytest.mark.parametrize("caller_loop", [True, False], ids=["caller-loop", "server-loop"])
+async def test_async_callback_receives_url_and_kwargs(caller_loop):
+    """Async callbacks get the canonical URL and request kwargs on both loop paths."""
+    seen: list[tuple[Any, dict[str, Any]]] = []
+
+    async def cb(url, **kwargs):
+        seen.append((url, kwargs))
+        return CallbackResult(status=200, body=b"ok")
+
+    async with aiointercept(mock_external_urls=True) as m:
+        if not caller_loop:
+            m._caller_loop = None
+        m.post("http://cb-args.test/path?b=2&a=1", callback=cb)
+        async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            resp = await session.post("http://cb-args.test/path?b=2&a=1", json={"k": "v"}, headers={"X-Test": "yes"})
+            assert resp.status == 200
+
+    assert len(seen) == 1
+    url, kwargs = seen[0]
+    assert url == URL("http://cb-args.test/path?a=1&b=2")
+    assert set(kwargs) == {"headers", "query", "json", "data"}
+    assert kwargs["headers"]["X-Test"] == "yes"
+    assert kwargs["query"] == {"a": ["1"], "b": ["2"]}
+    assert kwargs["json"] == {"k": "v"}
+    assert kwargs["data"] == b'{"k": "v"}'
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    ("request_kwargs", "expected_data", "expected_json"),
+    [
+        pytest.param({"json": {"a": 1}}, b'{"a": 1}', {"a": 1}, id="json"),
+        pytest.param({"data": b"raw-bytes"}, b"raw-bytes", None, id="raw"),
+        pytest.param({"data": {"f": "1"}}, b"f=1", None, id="form"),
+    ],
+)
+async def test_callback_kwargs_data_is_request_body(is_async, request_kwargs, expected_data, expected_json):
+    """kwargs["data"] holds the raw request body for sync and async callbacks."""
+    seen: dict[str, Any] = {}
+
+    def sync_cb(url, **kwargs):
+        seen.update(kwargs)
+
+    async def async_cb(url, **kwargs):
+        seen.update(kwargs)
+
+    async with aiointercept(mock_external_urls=True) as m:
+        m.post("http://cb-data.test/", callback=async_cb if is_async else sync_cb)
+        async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            resp = await session.post("http://cb-data.test/", **request_kwargs)
+            assert resp.status == 200
+
+    assert seen["data"] == expected_data
+    assert seen["json"] == expected_json
+
+
 async def test_shared_resolve_host_no_active_instances_uses_real_resolution():
     """With patches installed but no active instances, _shared_resolve_host
     falls through to the real implementation."""
@@ -2329,12 +2496,68 @@ async def test_server_thread_startup_failure_propagates():
     assert m._server_loop is None
 
 
+async def test_stop_right_after_start_does_not_hang(monkeypatch):
+    """stop() right after start() must not join a server thread that was never told to stop.
+
+    The server thread is made slow to enter ``run_forever`` to force the race. The
+    start/stop pair runs on a daemon thread joined with a timeout, so a regression
+    fails the test instead of hanging the whole run.
+    """
+    real_new_event_loop = asyncio.new_event_loop
+
+    def slow_new_event_loop():
+        loop = real_new_event_loop()
+        if threading.current_thread().name == "aiointercept-server":
+            real_run_forever = loop.run_forever
+            real_run_until_complete = loop.run_until_complete
+            in_run_until_complete = False
+
+            def slow_run_forever():
+                # run_until_complete calls run_forever internally; only delay the
+                # top-level call that serves requests, not the startup.
+                if not in_run_until_complete:
+                    time.sleep(0.5)
+                real_run_forever()
+
+            def tracked_run_until_complete(future):
+                nonlocal in_run_until_complete
+                in_run_until_complete = True
+                try:
+                    return real_run_until_complete(future)
+                finally:
+                    in_run_until_complete = False
+
+            loop.run_forever = slow_run_forever
+            loop.run_until_complete = tracked_run_until_complete
+        return loop
+
+    monkeypatch.setattr(asyncio, "new_event_loop", slow_new_event_loop)
+
+    errors: list[BaseException] = []
+
+    async def start_then_stop() -> None:
+        async with aiointercept():
+            pass
+
+    def run() -> None:
+        try:
+            asyncio.run(start_then_stop())
+        except BaseException as e:  # pragma: no cover - only on failure
+            errors.append(e)
+
+    helper = threading.Thread(target=run, name="start-stop-helper", daemon=True)
+    helper.start()
+    helper.join(timeout=10)
+
+    assert not helper.is_alive(), "stop() hung after an immediate start()"
+    assert not errors
+
+
 async def test_aenter_failure_after_server_start_cleans_up():
     """If __aenter__ fails after the server starts, the server thread is stopped
-    and the class-level patches are rolled back (no leaked refcount/state)."""
+    and the class-level patches are rolled back (no leaked state)."""
     from aiointercept import core as ai_core
 
-    refcount_before = ai_core._patch_refcount
     resolve_host_before = TCPConnector._resolve_host
 
     m = aiointercept(mock_external_urls=True)
@@ -2349,7 +2572,6 @@ async def test_aenter_failure_after_server_start_cleans_up():
     assert m._server_thread is None
     assert m._server_loop is None
     assert m not in ai_core._active_instances
-    assert ai_core._patch_refcount == refcount_before
     assert TCPConnector._resolve_host is resolve_host_before
 
 
@@ -2420,6 +2642,45 @@ async def test_passthrough_proxied_repeated_response_headers_preserved(real_upst
         resp = await session.get(f"{base}/two-cookies")
         cookies = [v for k, v in resp.raw_headers if k.lower() == b"set-cookie"]
         assert cookies == [b"a=1; Path=/", b"b=2; Path=/", b"c=3; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/"]
+
+
+@pytest.mark.parametrize("route", ["passthrough_unmatched", "passthrough_host"])
+@pytest.mark.parametrize(
+    ("kwargs", "expected_body", "expected_content_type"),
+    [
+        pytest.param({"data": b"\x00raw\xffbytes"}, b"\x00raw\xffbytes", "application/octet-stream", id="raw-bytes"),
+        pytest.param({"data": {"a": "1"}}, b"a=1", "application/x-www-form-urlencoded", id="form"),
+        pytest.param({"json": {"k": [1, 2]}}, b'{"k": [1, 2]}', "application/json", id="json"),
+        pytest.param({}, b"", None, id="empty"),
+    ],
+)
+async def test_passthrough_forwards_request_body(
+    real_upstream: TestServer,
+    route: str,
+    kwargs: dict[str, Any],
+    expected_body: bytes,
+    expected_content_type: str | None,
+):
+    """The upstream must receive exactly the body (and Content-Type) the client sent.
+
+    ``passthrough_unmatched`` goes through ``_dispatch``'s proxy request;
+    ``passthrough=[host]`` resolves for real and connects directly, bypassing
+    ``_dispatch``, but must deliver the same bytes.
+    """
+    base = upstream_base(real_upstream)
+    if route == "passthrough_unmatched":
+        m = aiointercept(mock_external_urls=True, passthrough_unmatched=True)
+    else:
+        m = aiointercept(mock_external_urls=True, passthrough=["localhost"])
+    async with ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session, m:
+        if route == "passthrough_unmatched":
+            m.get(f"{base}/never-called", status=200)  # claims the host so requests are proxied
+        resp = await session.post(f"{base}/echo-body", **kwargs)
+        assert resp.status == 200
+        echoed = await resp.json()
+        assert base64.b64decode(echoed["body"]) == expected_body
+        if expected_content_type is not None:  # an empty POST has no meaningful Content-Type
+            assert echoed["content_type"] == expected_content_type
 
 
 async def test_passthrough_proxied_repeated_request_headers_preserved(real_upstream: TestServer):
@@ -2734,6 +2995,66 @@ async def test_streaming_response_body():
     assert b"".join(received) == b"".join(chunks)
 
 
+async def test_stop_is_bounded_while_response_is_in_flight():
+    """``stop()`` must not wait for a still-open endless streaming response."""
+
+    async def forever():
+        while True:
+            yield b"data: tick\n\n"
+            await asyncio.sleep(0.05)
+
+    session = ClientSession()
+    m = aiointercept()
+    await m.start()
+    m.get(f"{m.server_url}/sse", body=forever(), content_type="text/event-stream")
+    resp = await session.get(f"{m.server_url}/sse")
+    await resp.content.readany()
+    stop_task = asyncio.ensure_future(m.stop())
+    done, _ = await asyncio.wait({stop_task}, timeout=10)
+    # Dropping the connection lets a slow shutdown finish, so a failure here
+    # cannot hang the rest of the suite.
+    resp.close()
+    await session.close()
+    await stop_task
+    assert done, "stop() did not return within 10 s while a response was still open"
+
+
+async def _stop_while_slow_callback_runs(m: aiointercept) -> str:
+    """Start a request whose callback takes 2 s, call ``stop()`` mid-flight and
+    return the body the client received (or ``"error"`` if it got none)."""
+    started = asyncio.Event()
+
+    async def slow(url, **kwargs):
+        started.set()
+        await asyncio.sleep(2)
+        return CallbackResult(body="ok")
+
+    async def fetch() -> str:
+        # POST: aiohttp would retry an idempotent GET after the disconnect.
+        async with session.post(f"{m.server_url}/slow") as resp:
+            return await resp.text()
+
+    async with ClientSession() as session:
+        await m.start()
+        m.post(f"{m.server_url}/slow", callback=slow)
+        request = asyncio.ensure_future(fetch())
+        await started.wait()
+        await m.stop()
+        try:
+            return await request
+        except aiohttp.ClientError:
+            return "error"
+
+
+async def test_shutdown_timeout_default_cuts_off_slow_handler():
+    assert await _stop_while_slow_callback_runs(aiointercept()) == "error"
+
+
+async def test_shutdown_timeout_lets_slow_handler_finish():
+    m = aiointercept(shutdown_timeout=5)
+    assert await _stop_while_slow_callback_runs(m) == "ok"
+
+
 # ---------------------------------------------------------------------------
 # Streaming request
 # ---------------------------------------------------------------------------
@@ -2799,3 +3120,34 @@ def test_server_ssl_with_mock_external_urls_raises() -> None:
 async def test_server_url_default_is_http() -> None:
     async with aiointercept() as m:
         assert m.server_url.startswith("http://")
+
+
+@pytest.mark.parametrize("mock_external_urls", [False, True], ids=["server_url", "external_urls"])
+@pytest.mark.parametrize("scenario", ["exception_handler", "no_handler", "upstream_failure"])
+async def test_dropped_connection_sends_no_bytes_and_logs_502(scenario: str, mock_external_urls: bool, caplog):
+    """The 502 built when the connection is dropped never reaches the client: it
+    reads zero bytes. The status is only visible in the aiohttp.access log."""
+    if scenario == "upstream_failure" and not mock_external_urls:
+        pytest.skip("passthrough needs mock_external_urls=True")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    caplog.set_level(logging.INFO, logger="aiohttp.access")
+    async with aiointercept(
+        mock_external_urls=mock_external_urls, passthrough_unmatched=scenario == "upstream_failure"
+    ) as m:
+        m.get("http://boom.test/boom", exception=True)
+        host, path = {
+            "exception_handler": ("boom.test", "/boom"),
+            "no_handler": ("boom.test", "/other"),
+            "upstream_failure": (f"localhost:{closed_port}", "/x"),
+        }[scenario]
+        reader, writer = await asyncio.open_connection("127.0.0.1", m.server_port)
+        writer.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+        assert await asyncio.wait_for(reader.read(), 5) == b""
+        writer.close()
+        for _ in range(100):
+            if " 502 " in caplog.text:
+                break
+            await asyncio.sleep(0.02)
+    assert f'"GET {path} HTTP/1.1" 502 ' in caplog.text
