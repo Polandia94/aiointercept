@@ -42,6 +42,9 @@ _MAX_DIFF_LINES = 60
 # open streaming response. aiohttp applies it twice (wait, cancel, wait again), so ``stop()`` is
 # bounded by about twice this value instead of the runner's 60 s default.
 _DEFAULT_SHUTDOWN_TIMEOUT = 0.5
+# aiohttp reads a shutdown timeout of 0 as "no limit", so ``shutdown_timeout=0`` ("don't wait")
+# is passed as this tiny positive value instead, which expires on the next loop iteration.
+_NO_WAIT_SHUTDOWN_TIMEOUT = 1e-9
 
 
 def _pformat(value: Any) -> list[str]:
@@ -451,7 +454,7 @@ class aiointercept:  # noqa: N801
         passthrough_unmatched: bool = False,
         param: str | None = None,
         server_ssl: "SSLContext | None" = None,
-        shutdown_timeout: float = _DEFAULT_SHUTDOWN_TIMEOUT,
+        shutdown_timeout: float | None = _DEFAULT_SHUTDOWN_TIMEOUT,
         **kwargs: Any,
     ) -> None:
         """Create a mock.
@@ -489,7 +492,9 @@ class aiointercept:  # noqa: N801
                 callback the client is still waiting on) get to finish. aiohttp
                 then cancels them and waits the same time again, so
                 :meth:`stop` takes at most about twice this value. Defaults to
-                ``0.5``. Must be finite and not negative.
+                ``0.5``. ``0`` cancels them right away; ``None`` or
+                ``math.inf`` waits for them without limit. Negative values
+                and NaN raise :class:`ValueError`.
         """
         if kwargs:
             warnings.warn(
@@ -511,8 +516,12 @@ class aiointercept:  # noqa: N801
                 "with interception enabled, requests are redirected to the mock server as plaintext"
             )
 
-        if not (0 <= shutdown_timeout < math.inf):
-            raise ValueError(f"shutdown_timeout must be a finite number >= 0, got {shutdown_timeout!r}")
+        if shutdown_timeout is not None and not shutdown_timeout >= 0:
+            raise ValueError(f"shutdown_timeout must be >= 0 or None, got {shutdown_timeout!r}")
+        if shutdown_timeout == math.inf:
+            shutdown_timeout = None  # aiohttp's spelling of "no limit"
+        elif shutdown_timeout == 0:
+            shutdown_timeout = _NO_WAIT_SHUTDOWN_TIMEOUT
 
         self._server_ssl = server_ssl
         self._shutdown_timeout = shutdown_timeout

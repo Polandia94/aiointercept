@@ -164,11 +164,15 @@ endless or unread streaming response, or while it waits on a slow callback.
 A client whose response is cut off this way gets a ``ClientConnectionError``.
 
 Raise ``shutdown_timeout`` if your code still has requests in flight when the
-mock stops and you need them to complete:
+mock stops and you need them to complete. Pass ``None`` (or ``math.inf``) to
+wait for them without limit, or ``0`` to cancel them right away:
 
 .. code-block:: python
 
     async with aiointercept(shutdown_timeout=5) as m:
+        ...
+
+    async with aiointercept(shutdown_timeout=None) as m:  # wait as long as it takes
         ...
 
 Async callbacks run on the test's event loop, so they run to the end even when
