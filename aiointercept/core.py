@@ -3,6 +3,7 @@ import difflib
 import inspect
 import json as json_module
 import logging
+import math
 import pprint
 import socket
 import threading
@@ -37,10 +38,10 @@ if TYPE_CHECKING:
 _MAX_DIFF_LINE_LEN = 200
 _MAX_DIFF_LINES = 60
 
-# Grace period (seconds) for handlers still running when ``stop()`` is called, e.g. an open
-# streaming response. aiohttp applies it twice (wait, cancel, wait again), so ``stop()`` is
+# Default grace period (seconds) for handlers still running when ``stop()`` is called, e.g. an
+# open streaming response. aiohttp applies it twice (wait, cancel, wait again), so ``stop()`` is
 # bounded by about twice this value instead of the runner's 60 s default.
-_SHUTDOWN_TIMEOUT = 0.5
+_DEFAULT_SHUTDOWN_TIMEOUT = 0.5
 
 
 def _pformat(value: Any) -> list[str]:
@@ -450,6 +451,7 @@ class aiointercept:  # noqa: N801
         passthrough_unmatched: bool = False,
         param: str | None = None,
         server_ssl: "SSLContext | None" = None,
+        shutdown_timeout: float = _DEFAULT_SHUTDOWN_TIMEOUT,
         **kwargs: Any,
     ) -> None:
         """Create a mock.
@@ -482,6 +484,12 @@ class aiointercept:  # noqa: N801
                 test server serves real TLS and :attr:`server_url` starts with
                 ``https://``. Clients must trust the certificate. Only supported
                 with ``mock_external_urls=False``.
+            shutdown_timeout: Seconds that handlers still running when
+                :meth:`stop` is called (an open streaming response, a slow
+                callback the client is still waiting on) get to finish. aiohttp
+                then cancels them and waits the same time again, so
+                :meth:`stop` takes at most about twice this value. Defaults to
+                ``0.5``. Must be finite and not negative.
         """
         if kwargs:
             warnings.warn(
@@ -503,7 +511,11 @@ class aiointercept:  # noqa: N801
                 "with interception enabled, requests are redirected to the mock server as plaintext"
             )
 
+        if not (0 <= shutdown_timeout < math.inf):
+            raise ValueError(f"shutdown_timeout must be a finite number >= 0, got {shutdown_timeout!r}")
+
         self._server_ssl = server_ssl
+        self._shutdown_timeout = shutdown_timeout
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
         self._mock_external_urls = mock_external_urls
@@ -641,7 +653,7 @@ class aiointercept:  # noqa: N801
                 app = web.Application(client_max_size=0)
                 app.router.add_route("*", "/{tail:.*}", self._dispatch)
                 self.server = TestServer(app)
-                await self.server.start_server(ssl=self._server_ssl, shutdown_timeout=_SHUTDOWN_TIMEOUT)
+                await self.server.start_server(ssl=self._server_ssl, shutdown_timeout=self._shutdown_timeout)
 
             try:
                 loop.run_until_complete(_start_server())

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `shutdown_timeout` parameter (default `0.5`): seconds that handlers still running when the mock stops get to finish before being cancelled. `stop()` takes at most about twice this value.
 - `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Only supported with `mock_external_urls=False`.
 - Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
 
@@ -19,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `stop()` (and leaving the context manager) no longer blocks for about two minutes when a response is still streaming; handlers still running get half a second to finish before being cancelled.
+- `stop()` (and leaving the context manager) no longer blocks for about two minutes when a response is still streaming; handlers still running get half a second to finish before being cancelled (configurable with `shutdown_timeout`).
 - `stop()` (or leaving `async with`) right after `start()` no longer hangs the process forever when the server thread has not started its event loop yet.
 - Repeated request and response headers are no longer folded into one on aiohttp 4 (aiohttp master): `strict_headers` checks in `assert_called_with` see each repeated header, and passthrough proxying keeps repeated headers such as `Set-Cookie` separate.
 - Passthrough hosts keep passing through when a regex handler is registered.
