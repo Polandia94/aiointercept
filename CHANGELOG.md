@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
+- Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
 ### Fixed
 
 - `stop()` (and leaving the context manager) no longer blocks for about two minutes when a response is still streaming; handlers still running get half a second to finish before being cancelled.
+- `stop()` (or leaving `async with`) right after `start()` no longer hangs the process forever when the server thread has not started its event loop yet.
 - Repeated request and response headers are no longer folded into one on aiohttp 4 (aiohttp master): `strict_headers` checks in `assert_called_with` see each repeated header, and passthrough proxying keeps repeated headers such as `Set-Cookie` separate.
 - Passthrough hosts keep passing through when a regex handler is registered.
 - `passthrough` accepts hosts without ports (matching every port on that host); entries containing ports, URLs, and invalid entries, or `passthrough` without `mock_external_urls=True`, now raise `ValueError`.
@@ -35,10 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Passthrough upstream failures surface as `ClientConnectionError` on the client instead of an HTTP 500.
 - The passthrough proxy preserves repeated request and response headers (e.g. multiple `Set-Cookie`).
 - A request whose upload is aborted by the client no longer leaves an empty entry in `m.requests`.
-
-### Changed
-
-- Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
 ## [1.0.0] - 2026-10-12
 

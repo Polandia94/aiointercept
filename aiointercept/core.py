@@ -179,7 +179,6 @@ class _SelfProxyError(Exception):
 # Module-level state for class-level patches shared across concurrent instances.
 # Only the first entering instance installs the patches; the last exiting one removes them.
 _patch_lock = threading.Lock()
-_patch_refcount: int = 0
 _real_ssl_context: Any = None
 _real_resolve_host: Any = None
 _real_get: Any = None
@@ -283,18 +282,18 @@ def _shared_ssl_context(connector_self: "TCPConnector", req: "ClientRequest") ->
 def _install_patches(inst: "aiointercept") -> None:
     """Register ``inst`` and, on the first active instance, patch host
     resolution, SSL context, and connection reuse at the class level."""
-    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
+    global _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
+        first = not _active_instances
         _active_instances.append(inst)
         _refresh_snapshot()
-        if _patch_refcount == 0:
+        if first:
             _real_ssl_context = TCPConnector._get_ssl_context  # pyright: ignore[reportPrivateUsage]
             _real_resolve_host = TCPConnector._resolve_host  # pyright: ignore[reportPrivateUsage]
             _real_get = TCPConnector._get  # pyright: ignore[reportPrivateUsage]
             TCPConnector._get_ssl_context = _shared_ssl_context  # type: ignore[assignment]
             TCPConnector._resolve_host = _shared_resolve_host  # type: ignore[assignment]
             TCPConnector._get = _shared_get  # type: ignore[assignment]
-        _patch_refcount += 1
 
 
 def _remove_patches(inst: "aiointercept") -> None:
@@ -302,14 +301,13 @@ def _remove_patches(inst: "aiointercept") -> None:
     the original host resolution, SSL context, and connection reuse. Idempotent:
     a no-op if ``inst`` was never registered (e.g. ``start()`` failed before
     patching)."""
-    global _patch_refcount, _real_ssl_context, _real_resolve_host, _real_get
+    global _real_ssl_context, _real_resolve_host, _real_get
     with _patch_lock:
         if inst not in _active_instances:
             return
         _active_instances.remove(inst)
         _refresh_snapshot()
-        _patch_refcount -= 1
-        if _patch_refcount == 0:
+        if not _active_instances:
             TCPConnector._get_ssl_context = _real_ssl_context  # type: ignore[method-assign]
             TCPConnector._resolve_host = _real_resolve_host  # type: ignore[method-assign]
             TCPConnector._get = _real_get  # type: ignore[method-assign]
@@ -365,6 +363,20 @@ class _CloseConnection:
 
 
 _CLOSE_CONNECTION = _CloseConnection()
+
+
+def _drop_connection(request: web.Request) -> web.Response:
+    """Close the client connection so the client raises ``ClientConnectionError``.
+
+    The returned response never reaches the client: the transport is already
+    closed, so aiohttp's writes are discarded and the client sees no bytes at all.
+    The 502 status is only visible in the server-side ``aiohttp.access`` log.
+    """
+    if request.transport:
+        request.transport.close()
+    return web.Response(status=502)
+
+
 handler_type = Callable[[web.Request], Awaitable[web.StreamResponse]] | _CloseConnection
 
 
@@ -386,9 +398,7 @@ class MockResponse:
     async def __call__(self, request: web.Request) -> web.StreamResponse:
         self.call_count += 1
         if self._handler is _CLOSE_CONNECTION:
-            if request.transport:
-                request.transport.close()
-            return web.Response(status=502, text="Handler registered to raise ClientConnectionError.")
+            return _drop_connection(request)
         fn = cast("Callable[[web.Request], Awaitable[web.StreamResponse]]", self._handler)
         return await fn(request)
 
@@ -642,7 +652,9 @@ class aiointercept:  # noqa: N801
                 self._server_loop = None
                 return
 
-            ready.set()
+            # Signal readiness from inside the running loop, so start() cannot return
+            # (and stop() cannot run) while loop.is_running() is still False.
+            loop.call_soon(ready.set)
             try:
                 loop.run_forever()
             finally:
@@ -671,7 +683,8 @@ class aiointercept:  # noqa: N801
 
     async def _stop_server_thread(self) -> None:
         server_loop = self._server_loop
-        if server_loop is not None and server_loop.is_running():
+        # A closed loop (the server thread died) can take no more callbacks; just join.
+        if server_loop is not None and not server_loop.is_closed():
 
             async def _teardown() -> None:
                 if self._bypass_session is not None:
@@ -735,9 +748,6 @@ class aiointercept:  # noqa: N801
         # DummyCookieJar: the proxy must not accumulate Set-Cookie state across
         # proxied requests — cookie handling belongs to each test's own client.
         return aiohttp.ClientSession(connector=_BypassConnector(), cookie_jar=aiohttp.DummyCookieJar())
-
-    def _match_pattern(self, url: str) -> bool:
-        return any(p.match(url) for p in self._patterns_list)
 
     def _diagnose_unmatched(self, method: str, url_str: str) -> str:
         request_line = f"{method} {url_str}"
@@ -863,19 +873,13 @@ class aiointercept:  # noqa: N801
                     # Upstream transport failure: surface it as a connection
                     # error on the client, like the unmatched path does.
                     logger.warning("aiointercept: passthrough %s %s failed: %r", request.method, real_url, exc)
-                    if request.transport:
-                        request.transport.close()
-                    return web.Response(status=502, text="Upstream request failed.")
+                    return _drop_connection(request)
                 else:
                     return web.Response(status=status, headers=resp_headers, body=body)
             warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
-            if request.transport:
-                request.transport.close()
-            # Fallback in case transport.close() didn't take effect — the client
-            # should normally see ClientConnectionError before reading this body.
-            return web.Response(status=502, text="No handler registered for this request.")
+            return _drop_connection(request)
         assert handler is not None
         return await handler(request)
 
