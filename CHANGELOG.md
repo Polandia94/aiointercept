@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- pytest plugin: override the new session-scoped `aiointercept_options` fixture to pass constructor options (such as `mock_external_urls=True`) to the shared server, and the fixtures now fail with a clear message when pytest-asyncio 0.24 or newer is missing.
 - `passthrough_ssl` parameter: pass an `ssl.SSLContext` to control TLS verification (private CA, client certificate) for unmatched requests the mock proxies upstream with `passthrough_unmatched=True` (unmatched paths on a mocked host, or any host once a regex pattern is registered).
 - `shutdown_timeout` parameter (default `0.5`): seconds that handlers still running when the mock stops get to finish before being cancelled. `stop()` takes at most about twice this value.
 - `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Only supported with `mock_external_urls=False`.
