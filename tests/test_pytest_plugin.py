@@ -1,10 +1,14 @@
 """Tests for the auto-discovered pytest plugin (aiointercept.pytest_plugin)."""
 
 import asyncio
+import os
+from pathlib import Path
 
 import aiohttp
+import pytest
 
 from aiointercept import CallbackResult, aiointercept
+from aiointercept.pytest_plugin import _fail_missing_pytest_asyncio
 
 
 async def test_fixture_serves_and_records(aiointercept_mock: aiointercept) -> None:
@@ -40,3 +44,57 @@ async def test_async_callback_runs_on_test_loop(aiointercept_mock: aiointercept)
     async with aiohttp.ClientSession() as session:
         await session.get(url)
     assert seen == [test_loop]
+
+
+_INNER_INI = """
+[pytest]
+asyncio_mode = auto
+asyncio_default_fixture_loop_scope = function
+"""
+
+
+def test_options_fixture_reaches_constructor(pytester: pytest.Pytester) -> None:
+    pytester.makeini(_INNER_INI)
+    pytester.makeconftest(
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def aiointercept_options():
+            return {"mock_external_urls": True}
+        """
+    )
+    pytester.makepyfile(
+        """
+        import aiohttp
+
+        async def test_external_url_is_mocked(aiointercept_mock):
+            aiointercept_mock.get("http://example.invalid/x", payload={"ok": True})
+            async with aiohttp.ClientSession() as session:
+                resp = await session.get("http://example.invalid/x")
+                assert await resp.json() == {"ok": True}
+        """
+    )
+    result = pytester.runpytest_subprocess()
+    result.assert_outcomes(passed=1)
+
+
+def test_missing_pytest_asyncio_explains_itself(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    shadow = Path(pytester.path) / "shadow"
+    shadow.mkdir()
+    (shadow / "pytest_asyncio.py").write_text("raise ImportError('simulated: pytest-asyncio is not installed')\n")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(shadow), os.environ.get("PYTHONPATH")])))
+    pytester.makepyfile(
+        """
+        def test_needs_fixture(aiointercept_mock):
+            pass
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "no:asyncio")
+    result.assert_outcomes(errors=1)
+    result.stdout.fnmatch_lines(["*pytest-asyncio 0.24*aiointercept[[]pytest-asyncio[]]*"])
+
+
+def test_missing_pytest_asyncio_message() -> None:
+    with pytest.raises(pytest.fail.Exception, match=r"pytest-asyncio 0\.24 or newer.*aiointercept\[pytest-asyncio\]"):
+        _fail_missing_pytest_asyncio()

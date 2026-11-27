@@ -1,9 +1,11 @@
 """Shared pytest fixtures and helpers."""
 
 import asyncio
+import base64
 import functools
 import gzip
 import json
+import ssl
 from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any, TypeVar
 
@@ -92,6 +94,15 @@ async def real_upstream() -> AsyncIterator[TestServer]:
         resp.headers.add("Link", '<https://b.test/>; rel="prev"')
         return resp
 
+    async def echo_body(request: web.Request) -> web.Response:
+        body = await request.read()
+        return web.json_response(
+            {
+                "body": base64.b64encode(body).decode(),
+                "content_type": request.headers.get("Content-Type"),
+            }
+        )
+
     app = web.Application()
     app.router.add_route("*", "/status/{code}", status)
     app.router.add_get("/gzip", gzipped)
@@ -101,7 +112,32 @@ async def real_upstream() -> AsyncIterator[TestServer]:
     app.router.add_get("/echo-dup", echo_dup)
     app.router.add_get("/echo-cookie-lines", echo_cookie_lines)
     app.router.add_get("/two-links", two_links)
+    app.router.add_post("/echo-body", echo_body)
     server = TestServer(app)
     await server.start_server()
     yield server
+    await server.close()
+
+
+@pytest.fixture
+async def tls_upstream() -> AsyncIterator[tuple[TestServer, ssl.SSLContext]]:
+    """A local HTTPS server (private trustme CA, cert for ``localhost``) plus a client context trusting that CA.
+
+    Reach it as ``https://localhost:{port}/...`` so requests go through DNS interception.
+    """
+    trustme = pytest.importorskip("trustme")
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("localhost").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+
+    async def hello(request: web.Request) -> web.Response:
+        return web.Response(text="secure upstream")
+
+    app = web.Application()
+    app.router.add_route("*", "/hello", hello)
+    server = TestServer(app)
+    await server.start_server(ssl=server_ctx)
+    yield server, client_ctx
     await server.close()
