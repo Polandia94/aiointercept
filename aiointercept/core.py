@@ -450,6 +450,7 @@ class aiointercept:  # noqa: N801
         passthrough_unmatched: bool = False,
         param: str | None = None,
         server_ssl: "SSLContext | None" = None,
+        passthrough_ssl: "SSLContext | None" = None,
         shutdown_timeout: float = _DEFAULT_SHUTDOWN_TIMEOUT,
         **kwargs: Any,
     ) -> None:
@@ -483,6 +484,16 @@ class aiointercept:  # noqa: N801
                 test server serves real TLS and :attr:`server_url` starts with
                 ``https://``. Clients must trust the certificate. Only supported
                 with ``mock_external_urls=False``.
+            passthrough_ssl: Client-side :class:`ssl.SSLContext` used when the
+                mock proxies an unmatched request to the real upstream (for a
+                private CA or client certificate). That happens for unmatched
+                paths on a host that has at least one mocked URL, and for every
+                host once a regex pattern is registered. Defaults to normal
+                certificate verification. It does not apply to hosts the mock
+                never handles (hosts listed in ``passthrough``, or hosts with
+                no mocks while no pattern is registered): those connect
+                directly with the client's own TLS settings. Requires
+                ``passthrough_unmatched=True``.
             shutdown_timeout: Seconds that handlers still running when
                 :meth:`stop` is called (an open streaming response, a slow
                 callback the client is still waiting on) get to finish. aiohttp
@@ -501,6 +512,9 @@ class aiointercept:  # noqa: N801
         if passthrough_unmatched and not mock_external_urls:
             raise ValueError("passthrough_unmatched=True requires mock_external_urls=True")
 
+        if passthrough_ssl is not None and not passthrough_unmatched:
+            raise ValueError("passthrough_ssl requires passthrough_unmatched=True")
+
         if passthrough and not mock_external_urls:
             raise ValueError("passthrough requires mock_external_urls=True")
 
@@ -511,6 +525,7 @@ class aiointercept:  # noqa: N801
             )
 
         self._server_ssl = server_ssl
+        self._passthrough_ssl = passthrough_ssl
         self._shutdown_timeout = shutdown_timeout
         self._passthrough_urls = passthrough or []
         self._passthrough_hosts: list[str] = []
@@ -865,7 +880,7 @@ class aiointercept:  # noqa: N801
                         # handling (allow_redirects, history) behaves as it would
                         # against the real network.
                         allow_redirects=False,
-                        ssl=True,
+                        ssl=self._passthrough_ssl or True,
                     ) as real_resp:
                         body = await real_resp.read()
                         status = real_resp.status

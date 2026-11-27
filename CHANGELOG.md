@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `passthrough_ssl` parameter: pass an `ssl.SSLContext` to control TLS verification (private CA, client certificate) for unmatched requests the mock proxies upstream with `passthrough_unmatched=True` (unmatched paths on a mocked host, or any host once a regex pattern is registered).
 - `shutdown_timeout` parameter (default `0.5`): seconds that handlers still running when the mock stops get to finish before being cancelled. `stop()` takes at most about twice this value.
 - `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Only supported with `mock_external_urls=False`.
 - Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
