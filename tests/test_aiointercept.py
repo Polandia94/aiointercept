@@ -3314,6 +3314,80 @@ async def test_server_url_default_is_http() -> None:
         assert m.server_url.startswith("http://")
 
 
+# ---------------------------------------------------------------------------
+# aiohttp tracing under interception
+# ---------------------------------------------------------------------------
+
+
+def _recording_trace_config() -> tuple[aiohttp.TraceConfig, list[str]]:
+    """A TraceConfig recording the name of every connector-level hook that fires."""
+    events: list[str] = []
+    tc = aiohttp.TraceConfig()
+
+    def recorder(name: str) -> Any:
+        async def hook(*_args: Any) -> None:
+            events.append(name)
+
+        return hook
+
+    for name in (
+        "on_request_start",
+        "on_request_end",
+        "on_connection_create_start",
+        "on_connection_create_end",
+        "on_connection_reuseconn",
+        "on_dns_resolvehost_start",
+        "on_dns_resolvehost_end",
+        "on_dns_cache_hit",
+        "on_dns_cache_miss",
+    ):
+        getattr(tc, name).append(recorder(name))
+    return tc, events
+
+
+@pytest.mark.parametrize("keepalive_url_kind", ["mocked", "passthrough"])
+async def test_connection_reuse_trace_fires_under_interception(real_upstream: TestServer, keepalive_url_kind: str):
+    """``traces`` reaches the original ``_get``: a keep-alive reuse is reported."""
+    tc, events = _recording_trace_config()
+    url = "http://example.com/" if keepalive_url_kind == "mocked" else f"{upstream_base(real_upstream)}/status/200"
+    async with (
+        ClientSession(trace_configs=[tc], timeout=aiohttp.ClientTimeout(total=5)) as session,
+        aiointercept(mock_external_urls=True, passthrough=["localhost"]) as m,
+    ):
+        m.get("http://example.com/", status=200, repeat=True)
+        for _ in range(2):
+            async with session.get(url) as resp:
+                assert resp.status == 200
+                await resp.read()
+    assert events.count("on_request_start") == 2
+    assert events.count("on_request_end") == 2
+    assert events.count("on_connection_create_start") == 1
+    assert events.count("on_connection_reuseconn") == 1
+
+
+@pytest.mark.parametrize("use_passthrough_unmatched", [False, True])
+async def test_dns_traces_fire_for_real_resolved_host_only(real_upstream: TestServer, use_passthrough_unmatched: bool):
+    """Resolution delegated to the real ``_resolve_host`` gets ``traces``; a mocked host skips DNS."""
+    tc, events = _recording_trace_config()
+    async with (
+        ClientSession(trace_configs=[tc], timeout=aiohttp.ClientTimeout(total=5)) as session,
+        aiointercept(
+            mock_external_urls=True,
+            passthrough=[] if use_passthrough_unmatched else ["localhost"],
+            passthrough_unmatched=use_passthrough_unmatched,
+        ) as m,
+    ):
+        m.get("http://example.com/", status=200)
+        async with session.get("http://example.com/") as resp:
+            assert resp.status == 200
+        assert "on_dns_resolvehost_start" not in events
+        assert "on_dns_resolvehost_end" not in events
+
+        async with session.get(f"{upstream_base(real_upstream)}/status/200") as resp:
+            assert resp.status == 200
+    assert "on_dns_cache_miss" in events
+    assert "on_dns_resolvehost_start" in events
+    assert "on_dns_resolvehost_end" in events
 @pytest.mark.parametrize("mock_external_urls", [False, True], ids=["server_url", "external_urls"])
 @pytest.mark.parametrize("scenario", ["exception_handler", "no_handler", "upstream_failure"])
 async def test_dropped_connection_sends_no_bytes_and_logs_502(scenario: str, mock_external_urls: bool, caplog):
