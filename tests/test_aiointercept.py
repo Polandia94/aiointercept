@@ -1652,6 +1652,33 @@ async def test_passthrough_unmatched_https_rejected_without_passthrough_ssl(
             await session.get(f"https://localhost:{server.port}/hello")
 
 
+@pytest.mark.parametrize("use_passthrough_ssl", [True, False])
+async def test_passthrough_unmatched_https_unmatched_path_on_mocked_host(
+    tls_upstream: tuple[TestServer, ssl.SSLContext], use_passthrough_ssl: bool
+) -> None:
+    """No regex needed: an exact mock on the host routes it to the mock, so an unmatched path
+    on that host is proxied upstream, and passthrough_ssl decides whether the private CA is trusted."""
+    server, client_ctx = tls_upstream
+    async with (
+        ClientSession() as session,
+        aiointercept(
+            mock_external_urls=True,
+            passthrough_unmatched=True,
+            passthrough_ssl=client_ctx if use_passthrough_ssl else None,
+        ) as m,
+    ):
+        m.get(f"https://localhost:{server.port}/other", status=200, body=b"mocked")
+        async with session.get(f"https://localhost:{server.port}/other") as resp:
+            assert await resp.text() == "mocked"
+        if use_passthrough_ssl:
+            async with session.get(f"https://localhost:{server.port}/hello") as resp:
+                assert resp.status == 200
+                assert await resp.text() == "secure upstream"
+        else:
+            with pytest.raises(aiohttp.ClientConnectionError):
+                await session.get(f"https://localhost:{server.port}/hello")
+
+
 def test_passthrough_ssl_requires_passthrough_unmatched() -> None:
     ctx = ssl.create_default_context()
     with pytest.raises(ValueError, match="passthrough_unmatched"):

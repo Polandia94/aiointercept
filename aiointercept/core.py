@@ -484,11 +484,14 @@ class aiointercept:  # noqa: N801
                 test server serves real TLS and :attr:`server_url` starts with
                 ``https://``. Clients must trust the certificate. Only supported
                 with ``mock_external_urls=False``.
-            passthrough_ssl: Client-side :class:`ssl.SSLContext` used for the
-                upstream requests the mock proxies because of
-                ``passthrough_unmatched=True`` (for a private CA or client
-                certificate). Defaults to normal certificate verification. It
-                does not apply to hosts listed in ``passthrough``, which connect
+            passthrough_ssl: Client-side :class:`ssl.SSLContext` used when the
+                mock proxies an unmatched request to the real upstream (for a
+                private CA or client certificate). That happens for unmatched
+                paths on a host that has at least one mocked URL, and for every
+                host once a regex pattern is registered. Defaults to normal
+                certificate verification. It does not apply to hosts the mock
+                never handles (hosts listed in ``passthrough``, or hosts with
+                no mocks while no pattern is registered): those connect
                 directly with the client's own TLS settings. Requires
                 ``passthrough_unmatched=True``.
             shutdown_timeout: Seconds that handlers still running when

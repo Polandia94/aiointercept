@@ -108,9 +108,13 @@ cannot modify.
     validation, ``ssl=`` options, fingerprint pinning and client certificates
     are therefore not exercised for mocked hosts.
 
-    Requests proxied to the real network by ``passthrough_unmatched=True`` are
-    re-sent by the mock with default certificate verification; the client's own
-    ``ssl=`` options do not apply to that upstream connection.
+    With ``passthrough_unmatched=True``, an unmatched request to a host the mock
+    handles is re-sent upstream by the mock. The mock handles a host when it has
+    at least one mocked URL, or when any regex pattern is registered. The
+    client's own ``ssl=`` options do not apply to that upstream connection: it
+    uses default certificate verification, or the ``passthrough_ssl`` context if
+    one is given. Hosts the mock does not handle connect directly with the
+    client's own TLS settings.
 
 
 Serving over HTTPS (real TLS)
@@ -479,9 +483,11 @@ Constructor parameters
    * - ``passthrough_ssl``
      - ``ssl.SSLContext | None``
      - ``None``
-     - Client-side TLS context for the upstream requests proxied by
-       ``passthrough_unmatched`` (for a private CA or client certificate).
-       Default is normal certificate verification. Does not apply to hosts in
+     - Client-side TLS context the mock uses when it proxies an unmatched
+       request upstream (for a private CA or client certificate): unmatched
+       paths on a host with at least one mocked URL, or any host once a regex
+       pattern is registered. Default is normal certificate verification. Does
+       not apply to hosts the mock never handles, such as hosts in
        ``passthrough``, which connect directly with the client's own TLS
        settings. Requires ``passthrough_unmatched=True``.
    * - ``param``
