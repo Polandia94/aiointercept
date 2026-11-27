@@ -4,6 +4,9 @@
     "config:recommended"
   ],
   "minimumReleaseAge": "7 days",
+  "pre-commit": {
+    "enabled": true
+  },
   "lockFileMaintenance": {
     "enabled": true
   },

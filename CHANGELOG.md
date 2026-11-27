@@ -10,15 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - pytest plugin: override the new session-scoped `aiointercept_options` fixture to pass constructor options (such as `mock_external_urls=True`) to the shared server, and the fixtures now fail with a clear message when pytest-asyncio 0.24 or newer is missing.
+- `passthrough_ssl` parameter: pass an `ssl.SSLContext` to control TLS verification (private CA, client certificate) for unmatched requests the mock proxies upstream with `passthrough_unmatched=True` (unmatched paths on a mocked host, or any host once a regex pattern is registered).
+- `shutdown_timeout` parameter (default `0.5`): seconds that handlers still running when the mock stops get to finish before being cancelled. `stop()` takes at most about twice this value.
 - `server_ssl` parameter: pass an `ssl.SSLContext` to serve the mock test server over real TLS (`server_url` becomes `https://...`). Only supported with `mock_external_urls=False`.
 - Document that aiohttp retries idempotent requests (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) once after a disconnect, which affects call counts for unmatched GETs and `exception=True` followed by a success, with workarounds in the migration guide.
 
 ### Changed
 
 - A second `repeat=True` registration for the same URL or pattern and method now raises `ValueError` instead of silently replacing the first.
+- Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
 ### Fixed
 
+- `stop()` (and leaving the context manager) no longer blocks for about two minutes when a response is still streaming; handlers still running get half a second to finish before being cancelled (configurable with `shutdown_timeout`).
+- `stop()` (or leaving `async with`) right after `start()` no longer hangs the process forever when the server thread has not started its event loop yet.
 - Repeated request and response headers are no longer folded into one on aiohttp 4 (aiohttp master): `strict_headers` checks in `assert_called_with` see each repeated header, and passthrough proxying keeps repeated headers such as `Set-Cookie` separate.
 - Passthrough hosts keep passing through when a regex handler is registered.
 - `passthrough` accepts hosts without ports (matching every port on that host); entries containing ports, URLs, and invalid entries, or `passthrough` without `mock_external_urls=True`, now raise `ValueError`.
@@ -35,10 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Passthrough upstream failures surface as `ClientConnectionError` on the client instead of an HTTP 500.
 - The passthrough proxy preserves repeated request and response headers (e.g. multiple `Set-Cookie`).
 - A request whose upload is aborted by the client no longer leaves an empty entry in `m.requests`.
-
-### Changed
-
-- Reading `server_url`, `server_host` or `server_port` before the mock is started now raises a `RuntimeError` with a clear message instead of an `AttributeError`.
 
 ## [1.0.0] - 2026-10-12
 
