@@ -108,9 +108,13 @@ cannot modify.
     validation, ``ssl=`` options, fingerprint pinning and client certificates
     are therefore not exercised for mocked hosts.
 
-    Requests proxied to the real network by ``passthrough_unmatched=True`` are
-    re-sent by the mock with default certificate verification; the client's own
-    ``ssl=`` options do not apply to that upstream connection.
+    With ``passthrough_unmatched=True``, an unmatched request to a host the mock
+    handles is re-sent upstream by the mock. The mock handles a host when it has
+    at least one mocked URL, or when any regex pattern is registered. The
+    client's own ``ssl=`` options do not apply to that upstream connection: it
+    uses default certificate verification, or the ``passthrough_ssl`` context if
+    one is given. Hosts the mock does not handle connect directly with the
+    client's own TLS settings.
 
 
 Serving over HTTPS (real TLS)
@@ -151,6 +155,29 @@ session with ``aiohttp.TCPConnector(ssl=client_ctx)``.
     combining it with ``mock_external_urls=True`` raises :class:`ValueError`.
     With interception enabled, HTTPS requests to intercepted hosts are still
     served by stripping TLS.
+
+Stopping with requests still in flight
+--------------------------------------
+
+When the mock stops (leaving ``async with`` or calling ``stop()``), handlers
+that are still running get ``shutdown_timeout`` seconds (default ``0.5``) to
+finish. Then they are cancelled and aiohttp waits the same time again, so
+stopping takes at most about twice ``shutdown_timeout``. A handler is still
+running when the client keeps its connection open, for example with an
+endless or unread streaming response, or while it waits on a slow callback.
+A client whose response is cut off this way gets a ``ClientConnectionError``.
+
+Raise ``shutdown_timeout`` if your code still has requests in flight when the
+mock stops and you need them to complete. The value is passed as is to
+aiohttp's ``AppRunner``:
+
+.. code-block:: python
+
+    async with aiointercept(shutdown_timeout=5) as m:
+        ...
+
+Async callbacks run on the test's event loop, so they run to the end even when
+their handler is cancelled; only the response to the client is lost.
 
 Registering mock responses
 --------------------------
@@ -453,6 +480,16 @@ Constructor parameters
      - ``False``
      - Proxy all unmatched requests to the real network. Requires
        ``mock_external_urls=True``.
+   * - ``passthrough_ssl``
+     - ``ssl.SSLContext | None``
+     - ``None``
+     - Client-side TLS context the mock uses when it proxies an unmatched
+       request upstream (for a private CA or client certificate): unmatched
+       paths on a host with at least one mocked URL, or any host once a regex
+       pattern is registered. Default is normal certificate verification. Does
+       not apply to hosts the mock never handles, such as hosts in
+       ``passthrough``, which connect directly with the client's own TLS
+       settings. Requires ``passthrough_unmatched=True``.
    * - ``param``
      - ``str | None``
      - ``None``
