@@ -11,3 +11,4 @@ plan.md
 htmlcov/
 dist/
 docs/_build/
+mutants/

@@ -28,9 +28,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "yarl >=1.23.0,<2.0.0",
-    "aiohttp >=3.13.3,<4.0.0",
-    "multidict >=6.0,<8.0",
+    "yarl >=1.23.0",
+    "aiohttp >=3.13.3",
+    "multidict >=6.0",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +91,7 @@ warn_unreachable = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+addopts = ["-p", "pytester"]
 markers = [
     "network: hits the real internet (deselect locally with -m 'not network')",
 ]
@@ -105,18 +106,32 @@ show_missing = true
 
 [dependency-groups]
 tests = [
-    "pytest (>=9.0.2,<10.0.0)",
-    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "httpx>=0.28.1",
     "requests>=2.34.2",
     "trustme>=1.2.0",
 ]
 dev = [
-    "ruff (>=0.17.0,<0.18.0)",
-    "mypy (>=2.4.0,<2.5.0)",
+    "ruff>=0.17.0",
+    "mypy>=2.4.0",
     "pre-commit>=4.5.1",
     "pytest-cov>=7.1.0",
+]
+mutation = [
+    "mutmut>=3.8,<4",
+    "pytest-timeout>=2.3",
 ]
 benchmarks = [
     "aioresponses (>=0.7.6,<1.0.0)",
 ]
+
+[tool.mutmut]
+source_paths = ["aiointercept/"]
+# The pytest plugin is loaded through the pytest11 entry point, so it must
+# stay importable from mutants/ without being mutated.
+do_not_mutate = ["aiointercept/pytest_plugin.py", "aiointercept/__init__.py"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# --timeout: a mutant that blocks thread.join() uses no CPU, so mutmut's own
+# CPU-time limit never fires. Keep it above the 90 s server-stop timeout.
+pytest_add_cli_args = ["-m", "not network", "-p", "no:cacheprovider", "--timeout=120"]

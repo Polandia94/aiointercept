@@ -1,0 +1,74 @@
+name: mutation testing
+
+# Weekly and on demand. Reports the mutation results; it never fails on the
+# score (only if the clean test run or mutmut itself breaks).
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      mutants:
+        description: "Optional mutant names or globs to run, space separated (blank = everything)"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    # A full run took about 7 min on the first try; this catches runaway hangs.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --locked --group tests --group mutation
+
+      # --no-sync: nothing below should re-sync the venv to the lockfile.
+      - name: Run mutmut
+        env:
+          MUTANTS: ${{ inputs.mutants }}
+        run: |
+          # Word-split into an array without globbing, so the input is only
+          # ever passed as arguments to mutmut, never interpreted by the shell.
+          read -r -a mutant_args <<< "$MUTANTS"
+          uv run --no-sync mutmut run --max-children "$(nproc)" "${mutant_args[@]}"
+
+      - name: Results
+        if: always()
+        run: |
+          uv run --no-sync mutmut results --all true > mutmut-results.txt || true
+          uv run --no-sync mutmut export-cicd-stats || true
+          {
+            echo "### Mutation results"
+            echo
+            echo '```'
+            sed -E 's/^.*: //' mutmut-results.txt | sort | uniq -c | sort -rn
+            echo '```'
+            if [ -f mutants/mutmut-cicd-stats.json ]; then
+              echo
+              echo '```json'
+              cat mutants/mutmut-cicd-stats.json
+              echo
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: mutmut-results
+          path: |
+            mutmut-results.txt
+            mutants/mutmut-cicd-stats.json
+            mutants/**/*.meta
+          if-no-files-found: warn
