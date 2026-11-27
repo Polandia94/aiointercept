@@ -448,6 +448,62 @@ async def test_url_repeat_error_mixing_repeat_true_and_list():
             m.get("http://mix.test/path", status=201, repeat=1)
 
 
+class _AddDuringIteration(dict):
+    """Pattern registry that runs ``on_iterate`` once, right after the first item is yielded.
+
+    This forces another thread's ``add()`` to land while ``_dispatch`` is
+    iterating the registry, instead of hoping a thread switch happens there.
+    """
+
+    def __init__(self, source, on_iterate):
+        super().__init__(source)
+        self._on_iterate = on_iterate
+
+    def items(self):
+        iterator = iter(super().items())
+        yield next(iterator)
+        on_iterate, self._on_iterate = self._on_iterate, lambda: None
+        on_iterate()
+        yield from iterator
+
+
+async def test_pattern_add_from_another_thread_during_dispatch():
+    """An add() from another thread while _dispatch scans the patterns neither breaks the request nor gets lost."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+        m.post(re.compile(r"^http://other\.test/.*$"), status=418)
+        m.post(re.compile(r"^http://pat\.test/.*$"), status=200)
+        late_pattern = re.compile(r"^http://late\.test/.*$")
+        adder = threading.Thread(target=lambda: m.post(late_pattern, status=201))
+
+        def add_from_other_thread():
+            adder.start()
+            # Without synchronisation the add lands at once, mid-iteration. With
+            # it, the add waits for the lookup to finish, so do not wait forever.
+            adder.join(timeout=0.5)
+
+        m.patterns_handler = _AddDuringIteration(m.patterns_handler, add_from_other_thread)
+        resp = await session.post("http://pat.test/path")
+        assert resp.status == 200
+        adder.join()
+        resp = await session.post("http://late.test/path")
+        assert resp.status == 201
+
+
+async def test_sync_callback_can_register_handlers():
+    """A sync callback runs on the server thread and may call add() without deadlocking."""
+    async with ClientSession() as session, aiointercept(mock_external_urls=True) as m:
+
+        def cb(url, **kwargs):
+            m.post("http://cbadd.test/next", status=201)
+            return CallbackResult(status=200)
+
+        m.post("http://cbadd.test/first", callback=cb)
+        resp = await session.post("http://cbadd.test/first")
+        assert resp.status == 200
+        resp = await session.post("http://cbadd.test/next")
+        assert resp.status == 201
+
+
 # ---------------------------------------------------------------------------
 # Callback
 # ---------------------------------------------------------------------------

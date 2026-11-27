@@ -549,6 +549,10 @@ class aiointercept:  # noqa: N801
         self.handlers: dict[tuple[str, str], MockResponse | list[MockResponse]] = {}
         # patterns_handler are (pattern, method) → handler or list of handlers (if repeat != True)
         self.patterns_handler: dict[tuple[Pattern[str], str], MockResponse | list[MockResponse]] = {}
+        # add()/clear()/stop() run on the caller's thread, _dispatch on the
+        # server thread. Held only around registry reads and writes: never
+        # across an await, nor while a handler or callback runs.
+        self._handlers_lock = threading.Lock()
 
         # recorded requests: {(METHOD, URL): [web.Request, ...]}
         self.requests: dict[tuple[str, URL], list[AiointerceptRequest]] = {}
@@ -644,8 +648,9 @@ class aiointercept:  # noqa: N801
         finally:
             await self._stop_server_thread()
             self._caller_loop = None
-            self.handlers.clear()
-            self.patterns_handler.clear()
+            with self._handlers_lock:
+                self.handlers.clear()
+                self.patterns_handler.clear()
             self._host_list.clear()
             self._patterns_list.clear()
 
@@ -826,37 +831,38 @@ class aiointercept:  # noqa: N801
         self.requests.setdefault(key, []).append(aiointercept_request)
         self.ordered_requests.append((key, aiointercept_request))
         url_str = str(url)
-        selected_handler = self.handlers.get((url_str, req_method))
-        if isinstance(selected_handler, list):
-            if not selected_handler:
-                handler: MockResponse | None = None
-            elif selected_handler[0]._repeat:
-                handler = selected_handler[0]
-            else:
-                handler = selected_handler.pop(0)
-
-        else:
-            handler = selected_handler
         original_host = request.headers.get("Host", request.url.host)
-        if handler is None:
-            original_urls = [
-                f"https://{original_host}{request.path_qs}",
-                f"http://{original_host}{request.path_qs}",
-            ]
-            for (pattern, method), pattern_handler in self.patterns_handler.items():
-                if any(pattern.match(u) for u in original_urls) and method == req_method:
-                    if isinstance(pattern_handler, list):
-                        handler = pattern_handler[0]
-                        remaining = pattern_handler[1:]
-                        if handler._repeat:
-                            pass  # repeating tail: keep serving it
-                        elif remaining:
-                            self.patterns_handler[pattern, req_method] = remaining
+        with self._handlers_lock:
+            selected_handler = self.handlers.get((url_str, req_method))
+            if isinstance(selected_handler, list):
+                if not selected_handler:
+                    handler: MockResponse | None = None
+                elif selected_handler[0]._repeat:
+                    handler = selected_handler[0]
+                else:
+                    handler = selected_handler.pop(0)
+
+            else:
+                handler = selected_handler
+            if handler is None:
+                original_urls = [
+                    f"https://{original_host}{request.path_qs}",
+                    f"http://{original_host}{request.path_qs}",
+                ]
+                for (pattern, method), pattern_handler in self.patterns_handler.items():
+                    if any(pattern.match(u) for u in original_urls) and method == req_method:
+                        if isinstance(pattern_handler, list):
+                            handler = pattern_handler[0]
+                            remaining = pattern_handler[1:]
+                            if handler._repeat:
+                                pass  # repeating tail: keep serving it
+                            elif remaining:
+                                self.patterns_handler[pattern, req_method] = remaining
+                            else:
+                                del self.patterns_handler[pattern, req_method]
                         else:
-                            del self.patterns_handler[pattern, req_method]
-                    else:
-                        handler = pattern_handler
-                    break
+                            handler = pattern_handler
+                        break
 
         if handler is None:
             warning_msg: str | None = None
@@ -899,7 +905,9 @@ class aiointercept:  # noqa: N801
                     return _drop_connection(request)
                 else:
                     return web.Response(status=status, headers=resp_headers, body=body)
-            warning_msg = warning_msg or self._diagnose_unmatched(req_method, str(url))
+            if warning_msg is None:
+                with self._handlers_lock:
+                    warning_msg = self._diagnose_unmatched(req_method, str(url))
             logger.warning(warning_msg)
             # this should raise ClientConnectionError on the other side
             return _drop_connection(request)
@@ -1064,28 +1072,31 @@ class aiointercept:  # noqa: N801
                 raise ValueError("repeat must be at least 1")
             handlers = [mock_response] * repeat
         if isinstance(url, Pattern):
-            if (url, method) in self.patterns_handler:
-                list_pattern_handler = self.patterns_handler[(url, method)]
-                if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
-                    list_pattern_handler += handlers
+            with self._handlers_lock:
+                if (url, method) in self.patterns_handler:
+                    list_pattern_handler = self.patterns_handler[(url, method)]
+                    if isinstance(list_pattern_handler, list) and not list_pattern_handler[-1]._repeat:
+                        list_pattern_handler += handlers
+                    else:
+                        raise ValueError(
+                            f"Existing handler for pattern {url} {method} has repeat=True, "
+                            "cannot add more handlers to it."
+                        )
                 else:
-                    raise ValueError(
-                        f"Existing handler for pattern {url} {method} has repeat=True, cannot add more handlers to it."
-                    )
-            else:
-                self.patterns_handler[url, method] = mock_response if repeat is True else handlers
+                    self.patterns_handler[url, method] = mock_response if repeat is True else handlers
             return mock_response
         handler_url = str(normalize_url(url))
-        if (handler_url, method) in self.handlers:
-            handlers_list = self.handlers[(handler_url, method)]
-            if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
-                handlers_list += handlers
+        with self._handlers_lock:
+            if (handler_url, method) in self.handlers:
+                handlers_list = self.handlers[(handler_url, method)]
+                if isinstance(handlers_list, list) and not (handlers_list and handlers_list[-1]._repeat):
+                    handlers_list += handlers
+                else:
+                    raise ValueError(
+                        f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
+                    )
             else:
-                raise ValueError(
-                    f"Existing handler for {handler_url} {method} has repeat=True, cannot add more handlers to it."
-                )
-        else:
-            self.handlers[handler_url, method] = mock_response if repeat is True else handlers
+                self.handlers[handler_url, method] = mock_response if repeat is True else handlers
         return mock_response
 
     def get(self, url: "URL | str | Pattern[str]", **kwargs: Any) -> "MockResponse":
@@ -1120,8 +1131,9 @@ class aiointercept:  # noqa: N801
         """Clear all recorded requests and registered handlers."""
         self.requests.clear()
         self.ordered_requests.clear()
-        self.handlers.clear()
-        self.patterns_handler.clear()
+        with self._handlers_lock:
+            self.handlers.clear()
+            self.patterns_handler.clear()
         self._host_list.clear()
         self._patterns_list.clear()
 

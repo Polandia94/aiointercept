@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Registering, clearing or consuming handlers from different threads (for example `add()` on the test thread while the mock server is matching a request) no longer races, which could make a request fail with HTTP 500 or silently drop a registration.
 - `stop()` (and leaving the context manager) no longer blocks for about two minutes when a response is still streaming; handlers still running get half a second to finish before being cancelled (configurable with `shutdown_timeout`).
 - `stop()` (or leaving `async with`) right after `start()` no longer hangs the process forever when the server thread has not started its event loop yet.
 - Repeated request and response headers are no longer folded into one on aiohttp 4 (aiohttp master): `strict_headers` checks in `assert_called_with` see each repeated header, and passthrough proxying keeps repeated headers such as `Set-Cookie` separate.
